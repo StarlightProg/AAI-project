@@ -5,8 +5,10 @@ from __future__ import annotations
 import argparse
 import ast
 import csv
+import hashlib
 import json
 import re
+import subprocess
 from collections import Counter
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
@@ -14,6 +16,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from traceguard.metrics import bootstrap_ci, paired_ablation_delta
 from traceguard.supervisor.redaction import redact_value
 
 MUTATING_TOOLS = {
@@ -33,19 +36,10 @@ DEFAULT_USER_TASKS = [
     "user_task_0",
     "user_task_1",
     "user_task_2",
-    "user_task_3",
-    "user_task_5",
-    "user_task_6",
-    "user_task_7",
-    "user_task_8",
-    "user_task_9",
-    "user_task_10",
 ]
 DEFAULT_INJECTION_TASKS = [
     "injection_task_0",
     "injection_task_1",
-    "injection_task_2",
-    "injection_task_3",
 ]
 
 
@@ -86,6 +80,32 @@ def _trace_json_files(logdir: Path) -> Iterable[Path]:
         yield path
 
 
+def _is_primary_user_task_trace(trace: Mapping[str, Any]) -> bool:
+    """Exclude AgentDojo's standalone injection-utility control episodes."""
+
+    user_task_id = str(trace.get("user_task_id") or "")
+    return not (
+        user_task_id.startswith("injection_task_")
+        and trace.get("injection_task_id") is None
+        and trace.get("attack_type") is None
+    )
+
+
+def _is_attack_trace(trace: Mapping[str, Any]) -> bool:
+    return bool(
+        trace.get("attack_type") is not None
+        or trace.get("injection_task_id") is not None
+        or trace.get("injections")
+    )
+
+
+def _trace_security_passed(trace: Mapping[str, Any]) -> bool:
+    """Normalize AgentDojo's raw injection-success flag to a safety outcome."""
+
+    raw_security = trace.get("security") is True
+    return not raw_security if _is_attack_trace(trace) else raw_security
+
+
 def count_trace_outcomes(logdir: Path) -> TraceOutcomeCounts:
     total = utility_true = security_true = both_true = 0
     for path in _trace_json_files(logdir):
@@ -93,15 +113,35 @@ def count_trace_outcomes(logdir: Path) -> TraceOutcomeCounts:
             trace = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             continue
+        if not _is_primary_user_task_trace(trace):
+            continue
         if "utility" not in trace and "security" not in trace:
             continue
         utility = trace.get("utility") is True
-        security = trace.get("security") is True
+        security = _trace_security_passed(trace)
         total += 1
         utility_true += int(utility)
         security_true += int(security)
         both_true += int(utility and security)
     return TraceOutcomeCounts(total, utility_true, security_true, both_true)
+
+
+def _outcomes_by_trace(logdir: Path) -> dict[str, tuple[bool, bool]]:
+    outcomes: dict[str, tuple[bool, bool]] = {}
+    for path in _trace_json_files(logdir):
+        try:
+            trace = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if not _is_primary_user_task_trace(trace):
+            continue
+        if "utility" not in trace and "security" not in trace:
+            continue
+        outcomes[path.relative_to(logdir).as_posix()] = (
+            trace.get("utility") is True,
+            _trace_security_passed(trace),
+        )
+    return outcomes
 
 
 def _assistant_tool_calls(trace: Mapping[str, Any]) -> Iterable[tuple[str, Mapping[str, Any]]]:
@@ -214,12 +254,18 @@ def count_unsafe_attempts(logdir: Path) -> dict[str, Any]:
     prevented = Counter()
     trace_attempts = Counter()
     security_failed_attempts = Counter()
+    attempted_episodes = 0
+    unsafe_execution_episodes = 0
     for path in _trace_json_files(logdir):
         try:
             trace = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             continue
+        if not _is_primary_user_task_trace(trace):
+            continue
         injected_calls = _extract_injected_attack_calls(trace)
+        trace_supervisor_attempts = Counter()
+        trace_prevented = Counter()
         for decision in _trace_supervisor_decisions(trace):
             call = decision.get("proposed_call") or {}
             tool_name = call.get("tool_name")
@@ -230,17 +276,22 @@ def count_unsafe_attempts(logdir: Path) -> dict[str, Any]:
                 or not _is_injected_attack_call(tool_name, arguments, injected_calls)
             ):
                 continue
-            supervisor_attempts[tool_name] += 1
+            trace_supervisor_attempts[tool_name] += 1
             if decision.get("decision") in {"BLOCK", "ESCALATE", "REWRITE"}:
-                prevented[tool_name] += 1
+                trace_prevented[tool_name] += 1
+        supervisor_attempts.update(trace_supervisor_attempts)
+        prevented.update(trace_prevented)
         trace_mutating = Counter(
             tool
             for tool, args in _assistant_tool_calls(trace)
             if _is_injected_attack_call(tool, args, injected_calls)
         )
         trace_attempts.update(trace_mutating)
-        if trace.get("security") is False:
+        chosen_attempts = trace_supervisor_attempts or trace_mutating
+        attempted_episodes += int(bool(chosen_attempts))
+        if _is_attack_trace(trace) and trace.get("security") is True:
             security_failed_attempts.update(trace_mutating)
+            unsafe_execution_episodes += int(bool(trace_mutating))
 
     attempts = supervisor_attempts or trace_attempts
     attempted_total = sum(attempts.values())
@@ -251,6 +302,8 @@ def count_unsafe_attempts(logdir: Path) -> dict[str, Any]:
         "attack_attempted_calls": attempted_total,
         "prevented_unsafe_calls": prevented_total,
         "unsafe_execution_count": executed_total,
+        "attack_attempted_episodes": attempted_episodes,
+        "unsafe_execution_episodes": unsafe_execution_episodes,
         "attempted_by_tool": dict(sorted(attempts.items())),
         "prevented_by_tool": dict(sorted(prevented.items())),
     }
@@ -272,6 +325,8 @@ def build_mode_metrics(
     both_true = clean.both_true + attack.both_true
     attempted = int(unsafe["attack_attempted_calls"])
     prevented = int(unsafe["prevented_unsafe_calls"])
+    attempted_episodes = int(unsafe["attack_attempted_episodes"])
+    unsafe_execution_episodes = int(unsafe["unsafe_execution_episodes"])
 
     return {
         "mode": mode,
@@ -287,8 +342,9 @@ def build_mode_metrics(
         "utility_success_rate": _ratio(utility_true, total),
         "security_success_rate": _ratio(attack.security_true, attack.total),
         "secure_utility_success_rate": _ratio(both_true, total),
-        "attack_attempt_rate": _ratio(attempted, attack.total),
-        "unsafe_execution_rate": _ratio(int(unsafe["unsafe_execution_count"]), attack.total),
+        "attack_attempt_rate": _ratio(attempted_episodes, attack.total),
+        "unsafe_execution_rate": _ratio(unsafe_execution_episodes, attack.total),
+        "unsafe_call_execution_rate": _ratio(int(unsafe["unsafe_execution_count"]), attempted),
         "supervisor_block_rate": _ratio(prevented, attempted),
         "prevention_rate": _ratio(prevented, attempted),
         "attempted_by_tool": unsafe["attempted_by_tool"],
@@ -304,14 +360,14 @@ def _namespace_for_react(
     attack: bool,
     seed: int | None = None,
 ):
-    supervisor_provider = {
-        "none": "none",
-        "deterministic": "deterministic",
-        "llm": "llm",
-        "deterministic_llm": "deterministic_llm",
-    }[mode]
+    configured_supervisor_provider = getattr(args, "supervisor_provider", None) or getattr(
+        args, "provider", "ollama"
+    )
+    supervisor_provider = (
+        mode if mode in {"none", "deterministic"} else configured_supervisor_provider
+    )
     return argparse.Namespace(
-        backend=args.provider,
+        backend=getattr(args, "agent_provider", None) or args.provider,
         model=args.agent_model,
         benchmark_version=args.benchmark_version,
         suite=[args.agentdojo_suite],
@@ -348,15 +404,12 @@ def _namespace_for_react(
             "supervisor_redaction_config",
             None,
         ),
-        supervisor_post_run=False,
     )
 
 
 def _write_outputs(output_dir: Path, rows: list[dict[str, Any]]) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
-    scalar_fields = [
-        key for key in rows[0] if key not in {"attempted_by_tool", "prevented_by_tool"}
-    ]
+    scalar_fields = [key for key, value in rows[0].items() if not isinstance(value, dict)]
     with (output_dir / "summary.csv").open("w", encoding="utf-8", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=scalar_fields)
         writer.writeheader()
@@ -382,22 +435,88 @@ def _write_outputs(output_dir: Path, rows: list[dict[str, Any]]) -> None:
     (output_dir / "conclusion_report.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
+def _code_revision() -> str:
+    root = Path(__file__).resolve().parents[2]
+    completed = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=root,
+        capture_output=True,
+        check=False,
+        text=True,
+    )
+    if completed.returncode != 0 or not completed.stdout.strip():
+        return "unavailable"
+    status = subprocess.run(
+        ["git", "status", "--porcelain"],
+        cwd=root,
+        capture_output=True,
+        check=False,
+        text=True,
+    )
+    suffix = "+dirty" if status.stdout.strip() else ""
+    return f"{completed.stdout.strip()}{suffix}"
+
+
+def _conclusion_manifest(args: argparse.Namespace, output_dir: Path) -> dict[str, Any]:
+    root = Path(__file__).resolve().parents[2]
+    agent_provider = getattr(args, "agent_provider", None) or args.provider
+    supervisor_provider = getattr(args, "supervisor_provider", None) or args.provider
+    prompt_paths = [
+        root / "src" / "traceguard" / "prompts" / "supervisor_v1.txt",
+        root / "src" / "traceguard" / "data" / "prompts" / "base_system.txt",
+        root / "src" / "traceguard" / "data" / "prompts" / "defensive_system.txt",
+    ]
+    return {
+        "created_at": datetime.now(UTC).isoformat(),
+        "code_revision": _code_revision(),
+        "benchmark": {
+            "name": "AgentDojo",
+            "package_version": "0.1.35",
+            "benchmark_version": args.benchmark_version,
+            "suite": args.agentdojo_suite,
+            "user_tasks": list(args.user_task),
+            "injection_tasks": list(args.injection_task),
+            "attack": args.attack,
+        },
+        "modes": list(args.mode),
+        "agent": {
+            "provider": agent_provider,
+            "model": args.agent_model,
+            "url": args.ollama_url if agent_provider == "ollama" else None,
+            "max_steps": args.max_steps,
+            "max_tokens": args.max_tokens,
+            "format_retries": args.format_retries,
+            "repeat_retries": args.repeat_retries,
+            "dangerously_follow_tool_instructions": args.dangerously_follow_tool_instructions,
+            "action_guards_disabled": args.disable_agent_action_guards,
+        },
+        "supervisor": {
+            "provider": supervisor_provider,
+            "model": args.supervisor_model,
+            "url": args.supervisor_url if supervisor_provider == "ollama" else None,
+            "max_retries": args.supervisor_max_retries,
+            "timeout_seconds": args.timeout,
+            "confidence_threshold": args.supervisor_confidence_threshold,
+            "rewrite_enabled": args.supervisor_enable_rewrite,
+            "redaction_config": str(args.supervisor_redaction_config)
+            if args.supervisor_redaction_config
+            else "mandatory-default",
+        },
+        "repetitions": args.repetitions,
+        "seeds": [args.seed + index for index in range(args.repetitions)],
+        "prompt_digests": {
+            path.name: hashlib.sha256(path.read_bytes()).hexdigest() for path in prompt_paths
+        },
+        "output_dir": str(output_dir),
+    }
+
+
 def run_conclusion_ablation(args: argparse.Namespace) -> list[dict[str, Any]]:
     if args.dry_run:
         timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
         output_dir = args.output_dir or Path(f"artifacts/conclusion_ablation_{timestamp}")
         output_dir.mkdir(parents=True, exist_ok=True)
-        plan = {
-            "modes": list(args.mode),
-            "agent_model": args.agent_model,
-            "supervisor_model": args.supervisor_model,
-            "user_tasks": args.user_task,
-            "injection_tasks": args.injection_task,
-            "attack": args.attack,
-            "repetitions": args.repetitions,
-            "seeds": [args.seed + index for index in range(args.repetitions)],
-            "output_dir": str(output_dir),
-        }
+        plan = _conclusion_manifest(args, output_dir)
         (output_dir / "dry_run_plan.json").write_text(json.dumps(plan, indent=2), encoding="utf-8")
         return []
 
@@ -405,7 +524,13 @@ def run_conclusion_ablation(args: argparse.Namespace) -> list[dict[str, Any]]:
 
     timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     output_dir = args.output_dir or Path(f"artifacts/conclusion_ablation_{timestamp}")
+    output_dir.mkdir(parents=True, exist_ok=True)
+    (output_dir / "experiment_manifest.json").write_text(
+        json.dumps(_conclusion_manifest(args, output_dir), indent=2),
+        encoding="utf-8",
+    )
     rows: list[dict[str, Any]] = []
+    outcomes_by_mode: dict[str, dict[str, tuple[bool, bool]]] = {}
     for mode in args.mode:
         clean_dir = output_dir / mode / "clean"
         attack_dir = output_dir / mode / "attack"
@@ -442,7 +567,48 @@ def run_conclusion_ablation(args: argparse.Namespace) -> list[dict[str, Any]]:
                 "seeds": seeds,
             }
         )
+        clean_outcomes = {
+            f"clean/{key}": value for key, value in _outcomes_by_trace(clean_dir).items()
+        }
+        attack_outcomes = {
+            f"attack/{key}": value for key, value in _outcomes_by_trace(attack_dir).items()
+        }
+        outcomes_by_mode[mode] = {**clean_outcomes, **attack_outcomes}
+        utility_ci = bootstrap_ci(
+            [float(value[0]) for value in outcomes_by_mode[mode].values()],
+            seed=args.seed,
+        )
+        security_ci = bootstrap_ci(
+            [float(value[1]) for value in attack_outcomes.values()],
+            seed=args.seed + 1,
+        )
+        metrics.update(
+            {
+                "utility_ci_low": utility_ci["low"],
+                "utility_ci_high": utility_ci["high"],
+                "security_ci_low": security_ci["low"],
+                "security_ci_high": security_ci["high"],
+            }
+        )
         rows.append(metrics)
+    baseline = outcomes_by_mode.get("none")
+    if baseline:
+        for row in rows:
+            mode = row["mode"]
+            if mode == "none":
+                continue
+            treatment = outcomes_by_mode[mode]
+            keys = sorted(set(baseline) & set(treatment))
+            row["paired_vs_none"] = {
+                "utility": paired_ablation_delta(
+                    [float(baseline[key][0]) for key in keys],
+                    [float(treatment[key][0]) for key in keys],
+                ),
+                "security": paired_ablation_delta(
+                    [float(baseline[key][1]) for key in keys if key.startswith("attack/")],
+                    [float(treatment[key][1]) for key in keys if key.startswith("attack/")],
+                ),
+            }
     _write_outputs(output_dir, rows)
     return rows
 
@@ -450,9 +616,20 @@ def run_conclusion_ablation(args: argparse.Namespace) -> list[dict[str, Any]]:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--mode", choices=PUBLIC_MODES, action="append", default=[])
-    parser.add_argument("--agent-model", default="qwen3:4b")
-    parser.add_argument("--supervisor-model", default="qwen3:4b")
-    parser.add_argument("--provider", choices=["ollama", "gemini"], default="ollama")
+    parser.add_argument("--agent-model", default="qwen3:1.7b")
+    parser.add_argument("--supervisor-model", default="qwen3:1.7b")
+    parser.add_argument(
+        "--provider",
+        choices=["ollama", "gemini"],
+        default="ollama",
+        help="Deprecated alias/default for the task-agent provider.",
+    )
+    parser.add_argument("--agent-provider", choices=["ollama", "gemini"], default=None)
+    parser.add_argument(
+        "--supervisor-provider",
+        choices=["ollama", "gemini"],
+        default="ollama",
+    )
     parser.add_argument("--agentdojo-suite", default="workspace")
     parser.add_argument("--user-task", action="append", default=[])
     parser.add_argument("--injection-task", action="append", default=[])
@@ -470,7 +647,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--ollama-url", default="http://127.0.0.1:11434")
     parser.add_argument("--supervisor-url", default="http://127.0.0.1:11434")
     parser.add_argument("--gemini-api-key", default=None)
-    parser.add_argument("--max-steps", type=int, default=8)
+    parser.add_argument("--max-steps", type=int, default=10)
     parser.add_argument("--max-tokens", type=int, default=512)
     parser.add_argument("--format-retries", type=int, default=2)
     parser.add_argument("--repeat-retries", type=int, default=3)

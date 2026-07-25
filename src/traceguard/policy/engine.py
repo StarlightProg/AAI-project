@@ -89,6 +89,20 @@ class DeterministicPolicy:
         lowered = {item.casefold() for item in call.requested_resources}
         if lowered.intersection(privileged):
             return self._block("POLICY_UNNECESSARY_PERMISSIONS", RiskLevel.CRITICAL)
+        for resource in call.requested_resources:
+            if resource == "artifact_output":
+                continue
+            if not resource.startswith("input:"):
+                return self._block("POLICY_UNKNOWN_RESOURCE", RiskLevel.HIGH)
+            raw_path = resource.removeprefix("input:")
+            path = PurePosixPath(raw_path)
+            if (
+                path.is_absolute()
+                or ".." in path.parts
+                or not path.parts
+                or path.parts[0] not in self.config.allowed_read_roots
+            ):
+                return self._block("POLICY_RESOURCE_PATH_OUTSIDE_ROOT", RiskLevel.HIGH)
         return None
 
     def _evaluate_goal_relevance(self, user_task: str, call: ToolCall) -> SupervisorOutput | None:
@@ -249,6 +263,7 @@ class DeterministicPolicy:
                     reason="Command depends on untrusted observations that appear instructional.",
                     matched_rules=self._version_rules("POLICY_UNTRUSTED_OBSERVATION_DEPENDENCY"),
                 )
+            profile, declared_rule = self._container_profile(call)
             return SupervisorOutput(
                 decision=Decision.ALLOW,
                 risk=RiskLevel.MEDIUM,
@@ -259,15 +274,18 @@ class DeterministicPolicy:
                 reason=(
                     "Command informed by untrusted input must use a predefined container profile."
                 ),
-                matched_rules=self._version_rules("POLICY_COMMAND_CONTAINER_UNTRUSTED"),
+                matched_rules=self._version_rules(
+                    "POLICY_COMMAND_CONTAINER_UNTRUSTED", declared_rule
+                ),
                 execution_target=ExecutionTarget.CONTAINER,
-                container_profile="isolated_compute",
+                container_profile=profile,
             )
 
         head = command[0].casefold()
         if head in {token.casefold() for token in self.config.blocked_command_tokens}:
             return self._block("POLICY_COMMAND_BLOCKED_TOKEN", RiskLevel.CRITICAL)
         if head in {token.casefold() for token in self.config.sandbox_command_tokens}:
+            profile, declared_rule = self._container_profile(call)
             return SupervisorOutput(
                 decision=Decision.ALLOW,
                 risk=RiskLevel.MEDIUM,
@@ -276,9 +294,9 @@ class DeterministicPolicy:
                 goal_relevance=GoalRelevance.STRONG,
                 goal_necessity=GoalNecessity.HELPFUL,
                 reason="Medium-risk command must use a predefined container profile.",
-                matched_rules=self._version_rules("POLICY_COMMAND_CONTAINER"),
+                matched_rules=self._version_rules("POLICY_COMMAND_CONTAINER", declared_rule),
                 execution_target=ExecutionTarget.CONTAINER,
-                container_profile="isolated_compute",
+                container_profile=profile,
             )
         if head in {token.casefold() for token in self.config.benign_command_tokens}:
             return SupervisorOutput(
@@ -302,6 +320,15 @@ class DeterministicPolicy:
             reason="Unknown command binary requires human or LLM review.",
             matched_rules=self._version_rules("POLICY_COMMAND_UNKNOWN_ESCALATE"),
         )
+
+    @staticmethod
+    def _container_profile(call: ToolCall) -> tuple[str, str]:
+        resources = set(call.requested_resources)
+        if "artifact_output" in resources:
+            return "artifact_build", "POLICY_CONTAINER_ARTIFACT_OUTPUT"
+        if any(resource.startswith("input:") for resource in resources):
+            return "readonly_input", "POLICY_CONTAINER_READONLY_INPUT"
+        return "isolated_compute", "POLICY_CONTAINER_ISOLATED"
 
     def _allow(
         self,

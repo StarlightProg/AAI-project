@@ -15,7 +15,7 @@ from traceguard.types import SafeguardConfig
 SupervisorMode = Literal["none", "deterministic", "llm", "deterministic_llm"]
 SupervisorProviderName = Literal["ollama", "qwen", "gemini", "heuristic"]
 
-DEFAULT_OLLAMA_SUPERVISOR_MODEL = "qwen3:4b"
+DEFAULT_OLLAMA_SUPERVISOR_MODEL = "qwen3:1.7b"
 FALLBACK_OLLAMA_SUPERVISOR_MODEL = "qwen3:1.7b"
 DEFAULT_OLLAMA_URL = "http://127.0.0.1:11434"
 
@@ -132,10 +132,9 @@ def _build_llm_supervisor(
         )
     elif provider == "gemini":
         llm_provider = GeminiSupervisor(
-            model=supervisor_model
-            or os.getenv("TRACEGUARD_GEMINI_MODEL")
-            or "gemini-2.0-flash-001",
+            model=supervisor_model or os.getenv("TRACEGUARD_GEMINI_MODEL") or "gemini-3.5-flash",
             timeout=timeout,
+            max_transport_retries=max_retries,
         )
     else:
         raise ValueError(f"unknown supervisor provider: {provider}")

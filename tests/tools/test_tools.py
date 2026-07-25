@@ -129,3 +129,19 @@ def test_restricted_command_never_runs_host_shell(tmp_path):
     assert payload["status"] == "simulated"
     assert payload["host_execution"] is False
     assert payload["marker"] == "TRACEGUARD_REQUIRES_EXECUTION_PLAN"
+
+
+def test_registry_can_be_restricted_to_case_tools(tmp_path):
+    registry = default_registry(tmp_path, tmp_path / "artifacts").restricted_to(["calculator"])
+    assert set(registry.schemas()) == {"calculator"}
+    with pytest.raises(KeyError, match="unknown tool"):
+        registry.execute(
+            ToolCall(
+                task_id="t",
+                step_id=0,
+                tool_name="read_file",
+                arguments={"path": "inputs/x.txt"},
+            )
+        )
+    with pytest.raises(ValueError, match="unknown tools"):
+        registry.restricted_to(["not_a_tool"])

@@ -16,6 +16,7 @@ from traceguard.types import (
     ExecutionTarget,
     Observation,
     PostRunAssessment,
+    PostRunDisposition,
     SafeguardConfig,
     SupervisorOutput,
     ToolCall,
@@ -101,6 +102,11 @@ class TraceGuardRuntime:
             effective_call=effective_call,
             target=target,
             sandbox_profile=profile,
+            declared_input_paths=[
+                resource.removeprefix("input:")
+                for resource in effective_call.requested_resources
+                if resource.startswith("input:")
+            ],
             validated=True,
             validation_reason="approved safeguard merge",
         )
@@ -124,6 +130,23 @@ class TraceGuardRuntime:
             post_run = None
             if self.config.post_run_reevaluation and self.supervisor:
                 post_run = self.supervisor.reevaluate(user_task, effective_call, evidence)
+            if post_run and post_run.disposition is not PostRunDisposition.ACCEPT_RESULT:
+                outcome = (
+                    "ESCALATE"
+                    if post_run.disposition
+                    in {PostRunDisposition.ESCALATE, PostRunDisposition.REWRITE_AND_RETRY}
+                    else "BLOCK_RESULT"
+                )
+                trace = self._trace(
+                    call,
+                    effective_call,
+                    outputs,
+                    plan,
+                    observation,
+                    started,
+                    outcome,
+                )
+                return RuntimeResult(trace, None, post_run)
             trace = self._trace(
                 call, effective_call, outputs, plan, observation, started, "EXECUTED_CONTAINER"
             )
@@ -185,6 +208,11 @@ class TraceGuardRuntime:
         outcome: str,
     ) -> TraceEvent:
         digest = hashlib.sha256(observation.content.encode()).hexdigest() if observation else None
+        token_usage = sum(
+            int(output.provider_metadata.get("prompt_eval_count") or 0)
+            + int(output.provider_metadata.get("eval_count") or 0)
+            for output in outputs
+        )
         return TraceEvent(
             task_id=proposed.task_id,
             step_id=proposed.step_id,
@@ -195,6 +223,7 @@ class TraceGuardRuntime:
             result_observation_id=observation.observation_id if observation else None,
             result_digest=digest,
             latency_ms=(time.monotonic() - started) * 1000,
+            token_usage=token_usage,
             policy_version=self.policy.version if self.policy else "disabled",
             episode_outcome=outcome,
         )

@@ -68,4 +68,7 @@ def load_sandbox_configuration(path: Path) -> SandboxConfiguration:
 
 
 def default_sandbox_configuration_path() -> Path:
-    return Path(__file__).resolve().parents[3] / "configs" / "sandbox_profiles.json"
+    source_tree_path = Path(__file__).resolve().parents[3] / "configs" / "sandbox_profiles.json"
+    if source_tree_path.is_file():
+        return source_tree_path
+    return Path(__file__).resolve().parents[1] / "data" / "configs" / "sandbox_profiles.json"

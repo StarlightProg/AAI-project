@@ -15,6 +15,7 @@ from pydantic import ValidationError
 
 from traceguard.supervisor.contracts import (
     SupervisorEvaluationLog,
+    SupervisorProviderError,
     SupervisorProviderMetadata,
     SupervisorRequest,
     SupervisorResponse,
@@ -68,11 +69,70 @@ class UrlLibOllamaTransport:
         except json.JSONDecodeError as exc:
             raise SupervisorSchemaError("ollama returned non-JSON response") from exc
 
+    def get_json(self, path: str, *, timeout: float) -> dict[str, Any]:
+        try:
+            with urllib.request.urlopen(f"{self.url}{path}", timeout=timeout) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+            return payload if isinstance(payload, dict) else {}
+        except (OSError, urllib.error.URLError, json.JSONDecodeError):
+            return {}
+
 
 class GeminiTransport(Protocol):
     def generate_json(
         self, *, model: str, system: str, prompt: str, timeout: float
     ) -> dict[str, Any]: ...
+
+
+class GoogleGenAITransport:
+    """Production Gemini transport using the optional google-genai dependency."""
+
+    def __init__(self, api_key: str | None = None) -> None:
+        import os
+
+        self.api_key = api_key or os.getenv("GEMINI_API_KEY")
+
+    def generate_json(
+        self, *, model: str, system: str, prompt: str, timeout: float
+    ) -> dict[str, Any]:
+        del timeout
+        if not self.api_key:
+            raise SupervisorTransportError("GEMINI_API_KEY is not configured", retryable=False)
+        try:
+            from google import genai
+        except ImportError as exc:
+            raise SupervisorTransportError(
+                "install TraceGuard with the 'gemini' extra", retryable=False
+            ) from exc
+        try:
+            client = genai.Client(api_key=self.api_key)
+            response = client.models.generate_content(
+                model=model,
+                contents=prompt,
+                config={
+                    "system_instruction": system,
+                    "response_mime_type": "application/json",
+                    "response_json_schema": SUPERVISOR_RESPONSE_JSON_SCHEMA,
+                    "temperature": 0,
+                },
+            )
+            text = getattr(response, "text", None)
+            if not isinstance(text, str) or not text.strip():
+                raise SupervisorSchemaError("empty Gemini supervisor response")
+            parsed = json.loads(text)
+            if not isinstance(parsed, dict):
+                raise SupervisorSchemaError("Gemini supervisor response is not an object")
+            return parsed
+        except SupervisorProviderError:
+            raise
+        except json.JSONDecodeError as exc:
+            raise SupervisorSchemaError("Gemini returned malformed JSON") from exc
+        except Exception as exc:
+            status = getattr(exc, "status_code", None) or getattr(exc, "code", None)
+            retryable = status in {408, 429, 500, 502, 503, 504} or isinstance(exc, TimeoutError)
+            raise SupervisorTransportError(
+                f"Gemini request failed: {type(exc).__name__}", retryable=retryable
+            ) from exc
 
 
 SUPERVISOR_RESPONSE_JSON_SCHEMA = {
@@ -110,10 +170,6 @@ SUPERVISOR_RESPONSE_JSON_SCHEMA = {
     ],
     "additionalProperties": False,
 }
-OLLAMA_QUANTIZATION_NOTE = "Ollama library quantization for qwen3:4b; qwen3:1.7b is the fallback."
-OLLAMA_MEMORY_NOTE = (
-    "Targets the local RTX 4060 8 GB setup; qwen3:1.7b remains the low-memory fallback."
-)
 
 
 def _supervisor_response_json_schema(*, enable_rewrite: bool) -> dict[str, Any]:
@@ -164,12 +220,12 @@ class OllamaSupervisor:
     def __init__(
         self,
         *,
-        model: str = "qwen3:4b",
+        model: str = "qwen3:1.7b",
         url: str = "http://127.0.0.1:11434",
-        model_tag: str | None = "qwen3:4b",
+        model_tag: str | None = "qwen3:1.7b",
         model_digest: str | None = None,
-        quantization: str | None = OLLAMA_QUANTIZATION_NOTE,
-        memory_use: str | None = OLLAMA_MEMORY_NOTE,
+        quantization: str | None = None,
+        memory_use: str | None = None,
         max_transport_retries: int = 2,
         timeout: float = 60.0,
         seed: int = 0,
@@ -291,6 +347,7 @@ class OllamaSupervisor:
         raw: Mapping[str, Any] | None = None,
     ) -> SupervisorProviderMetadata:
         raw = raw or {}
+        self._populate_local_model_metadata()
         return SupervisorProviderMetadata(
             provider=self.provider,
             model=self.model,
@@ -304,6 +361,31 @@ class OllamaSupervisor:
             retries=retries,
         )
 
+    def _populate_local_model_metadata(self) -> None:
+        if not isinstance(self.transport, UrlLibOllamaTransport):
+            return
+        tags = self.transport.get_json("/api/tags", timeout=min(self.timeout, 5.0))
+        for model in tags.get("models", []):
+            if model.get("name") != self.model and model.get("model") != self.model:
+                continue
+            self.model_tag = model.get("name") or model.get("model") or self.model
+            self.model_digest = model.get("digest")
+            details = model.get("details") or {}
+            self.quantization = details.get("quantization_level")
+            break
+        running = self.transport.get_json("/api/ps", timeout=min(self.timeout, 5.0))
+        for model in running.get("models", []):
+            if model.get("name") != self.model and model.get("model") != self.model:
+                continue
+            size = _optional_int(model.get("size"))
+            size_vram = _optional_int(model.get("size_vram"))
+            if size is not None or size_vram is not None:
+                self.memory_use = (
+                    f"resident_bytes={size if size is not None else 'unknown'};"
+                    f"vram_bytes={size_vram if size_vram is not None else 'unknown'}"
+                )
+            break
+
 
 class GeminiSupervisor:
     """Experimental Gemini provider behind the same structured contract."""
@@ -313,30 +395,38 @@ class GeminiSupervisor:
     def __init__(
         self,
         *,
-        model: str = "gemini-2.0-flash-001",
+        model: str = "gemini-3.5-flash",
         transport: GeminiTransport | None = None,
         timeout: float = 60.0,
+        max_transport_retries: int = 2,
         redaction_config: RedactionConfig | None = None,
     ) -> None:
         self.model = model
-        self.transport = transport
+        self.transport = transport or GoogleGenAITransport()
         self.timeout = timeout
+        self.max_transport_retries = max_transport_retries
         self.redaction_config = mandatory_redaction_config(redaction_config)
         self.system_prompt = _load_supervisor_prompt()
 
     def evaluate(self, request: SupervisorRequest) -> SupervisorResponse:
-        if self.transport is None:
-            raise SupervisorTransportError("Gemini transport is not configured", retryable=False)
         prompt = json.dumps(
             redact_value(request.model_dump(mode="json"), self.redaction_config), sort_keys=True
         )
         started = time.monotonic()
-        raw = self.transport.generate_json(
-            model=self.model,
-            system=self.system_prompt,
-            prompt=prompt,
-            timeout=self.timeout,
-        )
+        retries = 0
+        while True:
+            try:
+                raw = self.transport.generate_json(
+                    model=self.model,
+                    system=self.system_prompt,
+                    prompt=prompt,
+                    timeout=self.timeout,
+                )
+                break
+            except SupervisorTransportError as exc:
+                if not exc.retryable or retries >= self.max_transport_retries:
+                    raise
+                retries += 1
         try:
             response = SupervisorResponse.model_validate(raw)
         except ValidationError as exc:
@@ -346,6 +436,7 @@ class GeminiSupervisor:
             model=self.model,
             model_tag=self.model,
             latency_ms=(time.monotonic() - started) * 1000,
+            retries=retries,
         )
         validate_rewrite_against_request(response, request)
         return response
@@ -382,7 +473,7 @@ class QwenSupervisor:
         self,
         *,
         provider: OllamaSupervisor | GeminiSupervisor | None = None,
-        model: str = "qwen3:4b",
+        model: str = "qwen3:1.7b",
         ollama_url: str = "http://127.0.0.1:11434",
         max_tokens: int = 384,
         available_tools: dict[str, dict[str, Any]] | None = None,
@@ -460,6 +551,22 @@ class QwenSupervisor:
                 error=f"provider evaluation failed; used fallback decision: {exc}",
             )
             return final
+        if (
+            response.decision in {Decision.ALLOW, Decision.REWRITE}
+            and response.confidence < self.confidence_threshold
+        ):
+            response = response.model_copy(
+                update={
+                    "decision": Decision.ESCALATE,
+                    "risk_level": "HIGH",
+                    "reason": (
+                        f"Provider confidence {response.confidence:.3f} is below the "
+                        f"configured threshold {self.confidence_threshold:.3f}; "
+                        "human review is required."
+                    ),
+                    "rewritten_call": None,
+                }
+            )
         final = self._to_runtime_output(response, deterministic, call)
         self.last_evaluation_log = SupervisorEvaluationLog(
             user_goal=user_task,

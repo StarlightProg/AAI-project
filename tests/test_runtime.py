@@ -1,10 +1,31 @@
-from traceguard.agent import ReActRunner, ScriptedAgent
+import pytest
+
+from traceguard.agent import (
+    ReActRunner,
+    ScriptedAgent,
+    StructuredTaskAgent,
+    TaskAgentResponse,
+)
 from traceguard.policy.engine import DeterministicPolicy, load_default_policy
 from traceguard.runtime import TraceGuardRuntime
 from traceguard.sandbox.runner import SandboxUnavailable
 from traceguard.supervisor.heuristic import HeuristicSupervisor
 from traceguard.tools.registry import default_registry
-from traceguard.types import Observation, SafeguardConfig, ToolCall, TrustLabel
+from traceguard.types import (
+    Decision,
+    ExecutionTarget,
+    GoalNecessity,
+    GoalRelevance,
+    Observation,
+    PostRunAssessment,
+    PostRunDisposition,
+    RiskLevel,
+    SafeguardConfig,
+    SandboxEvidence,
+    SupervisorOutput,
+    ToolCall,
+    TrustLabel,
+)
 
 
 class FailingSupervisor:
@@ -124,3 +145,101 @@ def test_deterministic_block_short_circuits_llm_supervisor(tmp_path):
     result = runtime.execute_call("run it", call, [])
     assert result.trace.episode_outcome == "BLOCK"
     assert len(result.trace.safeguard_outputs) == 1
+
+
+@pytest.mark.parametrize(
+    ("disposition", "expected_outcome", "observation_exposed"),
+    [
+        (PostRunDisposition.ACCEPT_RESULT, "EXECUTED_CONTAINER", True),
+        (PostRunDisposition.BLOCK_RESULT, "BLOCK_RESULT", False),
+        (PostRunDisposition.ESCALATE, "ESCALATE", False),
+        (PostRunDisposition.REWRITE_AND_RETRY, "ESCALATE", False),
+    ],
+)
+def test_post_run_disposition_is_enforced(
+    tmp_path, disposition, expected_outcome, observation_exposed
+):
+    class RoutingSupervisor:
+        def evaluate(self, user_task, call, observations):
+            del user_task, observations
+            return SupervisorOutput(
+                decision=Decision.ALLOW,
+                risk=RiskLevel.MEDIUM,
+                confidence=1.0,
+                policy_violation=False,
+                goal_relevance=GoalRelevance.STRONG,
+                goal_necessity=GoalNecessity.NECESSARY,
+                reason="contained test",
+                execution_target=ExecutionTarget.CONTAINER,
+                container_profile="isolated_compute",
+                provider_metadata={"prompt_eval_count": 4, "eval_count": 3},
+            )
+
+        def reevaluate(self, user_task, call, evidence):
+            del user_task, call, evidence
+            return PostRunAssessment(
+                risk=RiskLevel.LOW
+                if disposition is PostRunDisposition.ACCEPT_RESULT
+                else RiskLevel.HIGH,
+                confidence=1.0,
+                evidence=["test"],
+                disposition=disposition,
+                reason="post-run test",
+            )
+
+    class SuccessfulSandbox:
+        def execute(self, plan):
+            del plan
+            return SandboxEvidence(exit_code=0, stdout="safe output", profile="isolated_compute")
+
+    runtime = TraceGuardRuntime(
+        tools=default_registry(tmp_path, tmp_path / "artifacts"),
+        config=SafeguardConfig(llm_supervisor=True, post_run_reevaluation=True),
+        supervisor=RoutingSupervisor(),
+        sandbox=SuccessfulSandbox(),
+    )
+    call = ToolCall(
+        task_id="post-run",
+        step_id=0,
+        tool_name="restricted_command",
+        arguments={"command": ["python3", "-V"]},
+    )
+    result = runtime.execute_call("Run Python in containment", call, [])
+    assert result.trace.episode_outcome == expected_outcome
+    assert (result.observation is not None) is observation_exposed
+    assert result.post_run is not None
+    assert result.trace.token_usage == 7
+
+
+def test_structured_task_agent_uses_prompt_and_returns_final_answer():
+    class FakeTaskProvider:
+        def __init__(self):
+            self.payloads = []
+
+        def propose(self, payload):
+            self.payloads.append(payload)
+            return TaskAgentResponse(
+                kind="final",
+                tool_name=None,
+                arguments={},
+                consumed_observation_ids=[],
+                requested_resources=[],
+                answer="Done safely.",
+            )
+
+    provider = FakeTaskProvider()
+    agent = StructuredTaskAgent(
+        task_id="agent",
+        provider=provider,
+        available_tools={"calculator": {"type": "object"}},
+    )
+    result = agent.propose(
+        "DEFENSIVE PROMPT",
+        "Calculate 2 + 2",
+        [],
+        0,
+    )
+    assert result is None
+    assert agent.final_answer == "Done safely."
+    assert "DEFENSIVE PROMPT" in provider.payloads[0]["system_prompt"]
+    assert provider.payloads[0]["available_tools"] == {"calculator": {"type": "object"}}

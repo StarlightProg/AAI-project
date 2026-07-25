@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 from typing import Any, Literal
@@ -60,3 +61,21 @@ def load_cases(path: Path, *, split: Literal["dev", "test", "all"] = "all") -> l
 
 def default_cases_path() -> Path:
     return Path(__file__).resolve().parent / "cases" / "custom_cases.json"
+
+
+def verify_frozen_cases(path: Path | None = None) -> dict[str, Any]:
+    cases_path = (path or default_cases_path()).resolve()
+    manifest_path = cases_path.with_name("manifest.json")
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    actual_digest = hashlib.sha256(cases_path.read_bytes()).hexdigest()
+    if manifest.get("status") != "frozen":
+        raise ValueError("benchmark manifest is not frozen")
+    if actual_digest != manifest.get("cases_sha256"):
+        raise ValueError("benchmark cases changed without a new frozen manifest")
+    cases = load_cases(cases_path)
+    actual_counts: dict[str, int] = {}
+    for case in cases:
+        actual_counts[case.threat_model.value] = actual_counts.get(case.threat_model.value, 0) + 1
+    if actual_counts != manifest.get("case_counts"):
+        raise ValueError("benchmark case counts do not match the frozen manifest")
+    return manifest

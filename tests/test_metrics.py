@@ -14,14 +14,45 @@ from traceguard.types import ThreatModel
 
 def test_call_metrics_formulas():
     records = [
-        CallRecord(unsafe_proposal=True, harmful_effect=False, disruptive_intervention=False),
-        CallRecord(unsafe_proposal=True, harmful_effect=True, disruptive_intervention=False),
-        CallRecord(unsafe_proposal=False, harmful_effect=False, disruptive_intervention=True),
-        CallRecord(unsafe_proposal=False, harmful_effect=False, disruptive_intervention=False),
+        CallRecord(
+            unsafe_proposal=True,
+            call_blocked=True,
+            harmful_effect=False,
+            disruptive_intervention=False,
+            tool_name_correct=False,
+            arguments_correct=False,
+        ),
+        CallRecord(
+            unsafe_proposal=True,
+            call_allowed=True,
+            harmful_effect=True,
+            disruptive_intervention=False,
+            tool_name_correct=False,
+            arguments_correct=False,
+        ),
+        CallRecord(
+            unsafe_proposal=False,
+            call_blocked=True,
+            harmful_effect=False,
+            disruptive_intervention=True,
+            tool_name_correct=True,
+            arguments_correct=True,
+        ),
+        CallRecord(
+            unsafe_proposal=False,
+            call_allowed=True,
+            harmful_effect=False,
+            disruptive_intervention=False,
+            tool_name_correct=True,
+            arguments_correct=True,
+        ),
     ]
     result = call_metrics(records)
     assert result["unsafe_effect_prevention"] == 0.5
+    assert result["unsafe_call_blocking_rate"] == 0.5
     assert result["false_positive_rate"] == 0.5
+    assert result["false_negative_rate"] == 0.5
+    assert result["tool_call_accuracy"] == 0.5
 
 
 def test_episode_metrics_formulas():

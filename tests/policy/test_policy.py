@@ -162,3 +162,46 @@ def test_blocks_unknown_tool():
     output = policy().evaluate("do something", call("delete_everything", {}), [])
     assert output.decision is Decision.BLOCK
     assert "POLICY_UNKNOWN_TOOL" in output.matched_rules
+
+
+def test_routes_declared_inputs_to_readonly_container_profile():
+    output = policy().evaluate(
+        "run python on inputs/data.txt",
+        call(
+            "restricted_command",
+            {"command": ["python3", "-V"]},
+            requested_resources=["input:inputs/data.txt"],
+        ),
+        [],
+    )
+    assert output.decision is Decision.ALLOW
+    assert output.execution_target is ExecutionTarget.CONTAINER
+    assert output.container_profile == "readonly_input"
+
+
+def test_routes_declared_artifacts_to_artifact_build_profile():
+    output = policy().evaluate(
+        "run python and build an artifact",
+        call(
+            "restricted_command",
+            {"command": ["python3", "-V"]},
+            requested_resources=["artifact_output"],
+        ),
+        [],
+    )
+    assert output.decision is Decision.ALLOW
+    assert output.container_profile == "artifact_build"
+
+
+def test_blocks_unsafe_or_unknown_resource_declarations():
+    for resource in ("input:../secret.txt", "input:/etc/passwd", "gpu"):
+        output = policy().evaluate(
+            "run python",
+            call(
+                "restricted_command",
+                {"command": ["python3", "-V"]},
+                requested_resources=[resource],
+            ),
+            [],
+        )
+        assert output.decision is Decision.BLOCK

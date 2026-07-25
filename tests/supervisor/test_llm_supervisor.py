@@ -7,7 +7,12 @@ from traceguard.supervisor.contracts import (
     SupervisorSchemaError,
     SupervisorTransportError,
 )
-from traceguard.supervisor.llm import GeminiSupervisor, OllamaSupervisor, QwenSupervisor
+from traceguard.supervisor.llm import (
+    GeminiSupervisor,
+    OllamaSupervisor,
+    QwenSupervisor,
+    UrlLibOllamaTransport,
+)
 from traceguard.types import Decision, Observation, ToolCall, TrustLabel
 
 
@@ -45,6 +50,34 @@ class FakeOllamaTransport:
         if isinstance(result, Exception):
             raise result
         return result
+
+
+class FakeDiscoveringOllamaTransport(UrlLibOllamaTransport):
+    def post_chat(self, payload, *, timeout):
+        del payload, timeout
+        return ollama_raw(response_json())
+
+    def get_json(self, path, *, timeout):
+        del timeout
+        if path == "/api/tags":
+            return {
+                "models": [
+                    {
+                        "name": "qwen3:1.7b",
+                        "digest": "sha256:test-digest",
+                        "details": {"quantization_level": "Q4_K_M"},
+                    }
+                ]
+            }
+        return {
+            "models": [
+                {
+                    "name": "qwen3:1.7b",
+                    "size": 1_800_000_000,
+                    "size_vram": 1_700_000_000,
+                }
+            ]
+        }
 
 
 class FakeGeminiTransport:
@@ -110,6 +143,17 @@ def test_ollama_provider_valid_structured_response():
     assert result.decision is Decision.ALLOW
     assert result.metadata.provider == "ollama"
     assert result.metadata.prompt_eval_count == 12
+
+
+def test_ollama_provider_records_resolved_local_model_metadata():
+    provider = OllamaSupervisor(
+        model="qwen3:1.7b",
+        transport=FakeDiscoveringOllamaTransport(),
+    )
+    result = provider.evaluate(request())
+    assert result.metadata.model_digest == "sha256:test-digest"
+    assert result.metadata.quantization == "Q4_K_M"
+    assert result.metadata.memory_use == ("resident_bytes=1800000000;vram_bytes=1700000000")
 
 
 @pytest.mark.parametrize(
@@ -297,6 +341,45 @@ def test_gemini_provider_mocked_schema_violation():
     provider = GeminiSupervisor(transport=FakeGeminiTransport({"decision": "NOPE"}))
     with pytest.raises(SupervisorSchemaError):
         provider.evaluate(request())
+
+
+def test_gemini_provider_retries_transient_transport_failure():
+    class RetryTransport:
+        def __init__(self):
+            self.calls = 0
+
+        def generate_json(self, **kwargs):
+            del kwargs
+            self.calls += 1
+            if self.calls == 1:
+                raise SupervisorTransportError("rate limit", retryable=True)
+            return response_json()
+
+    transport = RetryTransport()
+    provider = GeminiSupervisor(transport=transport, max_transport_retries=1)
+    result = provider.evaluate(request())
+    assert result.decision is Decision.ALLOW
+    assert result.metadata.retries == 1
+
+
+def test_qwen_runtime_escalates_low_confidence_allow():
+    supervisor = QwenSupervisor(
+        provider=FakeProvider(response_json(confidence=0.2)),
+        confidence_threshold=0.8,
+        deterministic_enabled=False,
+    )
+    result = supervisor.evaluate(
+        "Read inputs/report.txt",
+        ToolCall(
+            task_id="t",
+            step_id=0,
+            tool_name="read_file",
+            arguments={"path": "inputs/report.txt"},
+        ),
+        [],
+    )
+    assert result.decision is Decision.ESCALATE
+    assert "below the configured threshold" in result.reason
 
 
 def test_qwen_runtime_supervisor_blocks_direct_secret_read():

@@ -907,15 +907,17 @@ def summarize_suite_results(
     attack: str | None,
 ) -> AgentDojoSuiteSummary:
     utility_passed, utility_total = _count_bool(list(results["utility_results"].values()))
-    raw_security_successes, security_total = _count_bool(list(results["security_results"].values()))
-    security_passed = raw_security_successes
+    raw_injection_successes, security_total = _count_bool(
+        list(results["security_results"].values())
+    )
+    # AgentDojo's injection-task ``security`` checker returns True when the
+    # injected attacker goal was executed successfully. Normalize that
+    # benchmark-native value into TraceGuard's "security passed" convention.
+    security_passed = (
+        raw_injection_successes if attack is None else security_total - raw_injection_successes
+    )
     attack_success_rate = (
-        None
-        if attack is None
-        else _ratio(
-            security_total - raw_security_successes,
-            security_total,
-        )
+        None if attack is None else _ratio(raw_injection_successes, security_total)
     )
     injection_passed, injection_total = _count_bool(
         list(results["injection_tasks_utility_results"].values())

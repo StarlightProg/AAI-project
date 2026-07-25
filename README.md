@@ -3,6 +3,11 @@
 TraceGuard is a research runtime for evaluating system-prompt defenses, deterministic policy, and LLM supervision for tool-using agents. Docker is used only as a conditional containment mechanism for uncertain, medium-risk command calls.
 
 The owner-specific implementation and research checklist is in [`TODO.md`](TODO.md).
+The reproducible results narrative is in
+[`docs/evaluation_report.md`](docs/evaluation_report.md), and the short walkthrough is
+in [`docs/demo.md`](docs/demo.md). Supervisor precedence and label semantics are in
+[`docs/contracts.md`](docs/contracts.md); confidence handling is documented in
+[`docs/supervisor_calibration.md`](docs/supervisor_calibration.md).
 
 ## Setup
 
@@ -15,7 +20,11 @@ ruff check .
 ruff format --check .
 ```
 
-Install `.[gemini]`, `.[agentdojo]`, or both for external evaluations. Gemini credentials and model choices belong in environment variables; Ollama uses its local HTTP API. The default local supervisor model is `qwen3:4b`; use `qwen3:1.7b` as the fallback if memory is tight or the larger model is unavailable.
+Install `.[gemini]`, `.[agentdojo]`, or both for external evaluations. Gemini
+credentials belong in `GEMINI_API_KEY`; Ollama uses its local HTTP API. The frozen
+local model choice is `qwen3:1.7b`, selected for the 8 GB evaluation host. The Gemini
+comparison model is `gemini-3.5-flash`; the former 2.0 identifier was removed after
+that model was shut down.
 
 ## Offline smoke run
 
@@ -28,7 +37,7 @@ The smoke run uses the deterministic policy and offline heuristic supervisor. It
 ## Experiments
 
 ```bash
-# four representative threat cases across all eight ablations
+# five cases per threat model across all eight ablations
 python -m traceguard smoke-matrix --seed 0
 
 # one case + one ablation
@@ -63,8 +72,8 @@ python -m traceguard.run_ablation --suite custom --supervisor deterministic_llm 
 python -m traceguard.run_ablation \
   --suite agentdojo \
   --supervisor deterministic_llm \
-  --agent-model qwen3:4b \
-  --supervisor-model qwen3:4b \
+  --agent-model qwen3:1.7b \
+  --supervisor-model qwen3:1.7b \
   --agentdojo-suite workspace \
   --attack tool_knowledge \
   --dangerously-follow-tool-instructions \
@@ -73,8 +82,8 @@ python -m traceguard.run_ablation \
 
 # conclusion matrix across none, deterministic, llm, and deterministic_llm
 traceguard conclusion-ablation \
-  --agent-model qwen3:4b \
-  --supervisor-model qwen3:4b \
+  --agent-model qwen3:1.7b \
+  --supervisor-model qwen3:1.7b \
   --dangerously-follow-tool-instructions \
   --force-rerun
 ```
@@ -90,8 +99,8 @@ or a configured suite/task ID is unavailable.
 
 Conclusion ablations write `summary.csv`, `summary.json`, `conclusion_report.md`,
 raw AgentDojo logs, and `traceguard_supervisor_calls.jsonl` under
-`artifacts/conclusion_ablation_*`. Use `qwen3:1.7b` first for the agent if qwen3:4b
-runs out of memory; keep qwen3:4b for the supervisor when possible.
+`artifacts/conclusion_ablation_*`. Provider metadata in traces records the resolved
+Ollama model tag, digest, quantization, resident bytes, and VRAM bytes when available.
 
 ## Repository layout
 

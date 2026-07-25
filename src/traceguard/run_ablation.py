@@ -31,6 +31,9 @@ def _run_custom(args: argparse.Namespace) -> int:
         provider=args.provider,
         supervisor_model=args.supervisor_model,
         timeout=args.timeout,
+        max_retries=getattr(args, "supervisor_max_retries", 2),
+        confidence_threshold=getattr(args, "supervisor_confidence_threshold", 0.55),
+        enable_rewrite=getattr(args, "supervisor_enable_rewrite", False),
     )
     if args.dry_run:
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -38,6 +41,7 @@ def _run_custom(args: argparse.Namespace) -> int:
             "suite": "custom",
             "supervisor": args.supervisor,
             "agent_model": args.agent_model,
+            "agent_provider": getattr(args, "agent_provider", "ollama"),
             "supervisor_model": args.supervisor_model,
             "provider": args.provider,
             "repetitions": getattr(args, "repetitions", 1),
@@ -62,11 +66,16 @@ def _run_custom(args: argparse.Namespace) -> int:
             ablations=ablations,
             seed=seed,
             artifacts_dir=output_dir,
-            code_revision="local",
             supervisor_provider=args.provider,
             supervisor_model=args.supervisor_model,
             supervisor_url=args.supervisor_url,
             timeout=args.timeout,
+            supervisor_max_retries=getattr(args, "supervisor_max_retries", 2),
+            supervisor_confidence_threshold=getattr(args, "supervisor_confidence_threshold", 0.55),
+            supervisor_enable_rewrite=getattr(args, "supervisor_enable_rewrite", False),
+            agent_provider=getattr(args, "agent_provider", "ollama"),
+            agent_model=args.agent_model,
+            agent_url=getattr(args, "ollama_url", None),
         )
         total_results += len(results)
         runs.append(
@@ -90,6 +99,8 @@ def _run_custom(args: argparse.Namespace) -> int:
 
 
 def _run_agentdojo(args: argparse.Namespace) -> int:
+    if args.agent_provider == "scripted":
+        raise ValueError("AgentDojo requires --agent-provider ollama or gemini")
     if not args.user_task:
         args.user_task = DEFAULT_USER_TASKS[:2] if args.smoke else DEFAULT_USER_TASKS
     if not args.injection_task:
@@ -171,8 +182,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--suite", choices=["custom", "agentdojo"], required=True)
     parser.add_argument("--supervisor", choices=PUBLIC_MODES, required=True)
-    parser.add_argument("--agent-model", default="qwen3:4b")
-    parser.add_argument("--supervisor-model", default="qwen3:4b")
+    parser.add_argument("--agent-model", default="qwen3:1.7b")
+    parser.add_argument(
+        "--agent-provider",
+        choices=["scripted", "ollama", "gemini"],
+        default="ollama",
+    )
+    parser.add_argument("--supervisor-model", default="qwen3:1.7b")
     parser.add_argument("--provider", choices=["ollama", "gemini", "heuristic"], default="ollama")
     parser.add_argument("--agentdojo-suite", default="workspace")
     parser.add_argument("--user-task", action="append", default=[])
@@ -192,7 +208,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--ollama-url", default="http://127.0.0.1:11434")
     parser.add_argument("--supervisor-url", default="http://127.0.0.1:11434")
     parser.add_argument("--gemini-api-key", default=None)
-    parser.add_argument("--max-steps", type=int, default=8)
+    parser.add_argument("--max-steps", type=int, default=10)
     parser.add_argument("--max-tokens", type=int, default=512)
     parser.add_argument("--format-retries", type=int, default=2)
     parser.add_argument("--repeat-retries", type=int, default=3)

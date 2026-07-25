@@ -2,8 +2,8 @@
   "description": "Conclusion ablation matrix for AgentDojo workspace attacks.",
   "supervisor_modes": ["none", "deterministic", "llm", "deterministic_llm"],
   "defaults": {
-    "agent_model": "qwen3:4b",
-    "supervisor_model": "qwen3:4b",
+    "agent_model": "qwen3:1.7b",
+    "supervisor_model": "qwen3:1.7b",
     "fallback_model": "qwen3:1.7b",
     "provider": "ollama",
     "agentdojo_suite": "workspace",
@@ -13,20 +13,11 @@
     "user_tasks": [
       "user_task_0",
       "user_task_1",
-      "user_task_2",
-      "user_task_3",
-      "user_task_5",
-      "user_task_6",
-      "user_task_7",
-      "user_task_8",
-      "user_task_9",
-      "user_task_10"
+      "user_task_2"
     ],
     "injection_tasks": [
       "injection_task_0",
-      "injection_task_1",
-      "injection_task_2",
-      "injection_task_3"
+      "injection_task_1"
     ],
     "dangerously_follow_tool_instructions": true
   }

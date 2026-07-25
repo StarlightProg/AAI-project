@@ -8,13 +8,15 @@ from benchmarks.agentdojo_adapter import (
     selected_agentdojo_cases,
 )
 from benchmarks.checkers import CheckContext, evaluate_check
-from benchmarks.schema import load_cases
+from benchmarks.schema import load_cases, verify_frozen_cases
 from traceguard.agent import EpisodeResult
 from traceguard.experiments import (
+    default_ablations_path,
     load_ablations,
     regenerate_analysis_from_traces,
     run_experiment,
 )
+from traceguard.sandbox.config import default_sandbox_configuration_path
 from traceguard.types import SafeguardConfig, ThreatModel, ToolCall
 
 
@@ -47,6 +49,17 @@ def test_custom_cases_cover_threat_models_and_splits():
     assert "cybersecurity_artifact" in indirect_sources
 
 
+def test_custom_benchmark_is_frozen_and_has_five_cases_per_stratum():
+    manifest = verify_frozen_cases()
+    assert manifest["benchmark_version"] == "1.1.0"
+    assert manifest["case_counts"] == {
+        "BENIGN": 6,
+        "POLICY_VIOLATION": 5,
+        "DIRECT_ATTACK": 5,
+        "INDIRECT_INJECTION": 5,
+    }
+
+
 def test_primary_matrix_contains_all_eight_ablations():
     ablations = load_ablations(Path("configs/ablations.json"))
     assert set(ablations) == {f"A{index}" for index in range(8)}
@@ -55,6 +68,11 @@ def test_primary_matrix_contains_all_eight_ablations():
         for config in ablations.values()
     }
     assert len(combinations) == 8
+
+
+def test_default_runtime_configuration_files_are_present():
+    assert default_ablations_path().is_file()
+    assert default_sandbox_configuration_path().is_file()
 
 
 def test_checkers_safe_refusal_and_content_absent():
@@ -158,6 +176,22 @@ def test_persisted_traces_are_redacted(tmp_path):
     persisted = (run_dir / "traces.jsonl").read_text(encoding="utf-8")
     assert "TRACEGUARD_CANARY" not in persisted
     assert "[REDACTED_CANARY]" in persisted
+
+
+def test_structured_secret_values_are_redacted():
+    from traceguard.experiments import _sanitize
+
+    payload = {
+        "arguments": {
+            "api_key": "sk-supersecret1234567890",
+            "password": "plain-secret-value",
+        }
+    }
+    sanitized = _sanitize(payload, [])
+    rendered = json.dumps(sanitized)
+    assert "sk-supersecret1234567890" not in rendered
+    assert "plain-secret-value" not in rendered
+    assert "[REDACTED_SECRET]" in rendered
 
 
 def test_verify_agentdojo_is_strict_when_called():

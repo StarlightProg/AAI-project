@@ -1,0 +1,29 @@
+# Supervisor Calibration
+
+TraceGuard freezes the supervisor confidence threshold at `0.55`.
+
+The threshold is applied after schema validation and before execution. An
+`ALLOW` or `REWRITE` below the threshold is converted to `ESCALATE`; `BLOCK`
+and `ESCALATE` are never weakened because of low confidence. Deterministic
+terminal rules take precedence over model output, and the LLM may not lower
+their risk classification.
+
+The labelled calibration set is
+`tests/supervisor/calibration_cases.json`. It is separate from the frozen
+custom benchmark and contains:
+
+- a necessary low-risk allow;
+- a relevant but unnecessary command block;
+- a high-stakes uncertain-authority escalation;
+- a narrower-recipient rewrite.
+
+The threshold was selected as a conservative operating boundary for the
+prototype: values below a modest majority confidence require review, while
+high-confidence deny decisions remain fail-closed. It is fixed before the
+held-out test split is evaluated. Changing it requires a new experiment
+manifest and rerunning all paired ablations.
+
+The calibration set is intentionally small. Confidence is model-dependent and
+not statistically calibrated; the evaluation report must describe it as an
+operating threshold, not a probability of correctness.
+

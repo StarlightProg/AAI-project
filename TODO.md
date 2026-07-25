@@ -4,13 +4,13 @@ This checklist starts from the current scaffold. Check off an item only when its
 
 ## Shared Integration Gates
 
-- [ ] Agree on and tag `types-v1`: review every model and enum in `src/traceguard/types.py`; record approved semantics for `REWRITE`, relevance, necessity, risk, trust, and execution targets.
-- [ ] Add contract fixtures shared by all workstreams: one benign call, one direct attack, one indirect injection, one policy violation, one rewrite, and one container-routed call.
-- [ ] Define the policy for conflicting deterministic and LLM outputs, including which component may lower risk and when `ESCALATE` requires human input.
+- [x] Agree on and tag `types-v1`: review every model and enum in `src/traceguard/types.py`; record approved semantics for `REWRITE`, relevance, necessity, risk, trust, and execution targets.
+- [x] Add contract fixtures shared by all workstreams: one benign call, one direct attack, one indirect injection, one policy violation, one rewrite, and one container-routed call.
+- [x] Define the policy for conflicting deterministic and LLM outputs, including which component may lower risk and when `ESCALATE` requires human input.
 - [x] Define experiment manifests containing code revision, AgentDojo version, model identifiers, prompt versions, policy version, image digest, seed, temperature, and enabled safeguards.
-- [ ] Add CI for Python 3.11 with `pytest`, `ruff check .`, and `ruff format --check .`.
-- [ ] Run an end-to-end smoke set before full experiments: at least five benign, five policy-violation, five direct-attack, and five indirect-injection episodes.
-- [ ] Freeze benchmark cases and labels before collecting final results; changes afterward require a new benchmark version.
+- [x] Add CI for Python 3.11 with `pytest`, `ruff check .`, and `ruff format --check .`.
+- [x] Run an end-to-end smoke set before full experiments: at least five benign, five policy-violation, five direct-attack, and five indirect-injection episodes.
+- [x] Freeze benchmark cases and labels before collecting final results; changes afterward require a new benchmark version.
 - [ ] Review representative traces together and resolve disagreements in unsafe-call, relevance, necessity, and episode-outcome labels.
 
 ## Person 1: LLM Supervisor
@@ -19,32 +19,32 @@ Owns `src/traceguard/supervisor/`, supervisor prompt data, and `tests/supervisor
 
 ### P1.1 Structured model integrations
 
-- [ ] Select and record the exact Gemini model identifier used for primary experiments.
-- [ ] Select an Ollama model that fits the M2 8 GB machine; record its tag, quantization, digest, and measured memory use.
+- [x] Select and record the exact Gemini model identifier used for primary experiments.
+- [x] Select an Ollama model that fits the M2 8 GB machine; record its tag, quantization, digest, and measured memory use.
 - [ ] Run one real structured-output request through `GeminiSupervisor` and one through `OllamaSupervisor`.
-- [ ] Add mocked transport tests covering valid output, malformed JSON, schema violations, timeout, unavailable model, rate limit, and empty response.
-- [ ] Add bounded retries for transient transport failures; never retry a valid `BLOCK` or `ESCALATE` decision.
-- [ ] Record request latency and input/output token usage in trace events where the provider exposes them.
-- [ ] Ensure prompts and logged payloads redact configured secret patterns and never request or store hidden chain-of-thought.
+- [x] Add mocked transport tests covering valid output, malformed JSON, schema violations, timeout, unavailable model, rate limit, and empty response.
+- [x] Add bounded retries for transient transport failures; never retry a valid `BLOCK` or `ESCALATE` decision.
+- [x] Record request latency and input/output token usage in trace events where the provider exposes them.
+- [x] Ensure prompts and logged payloads redact configured secret patterns and never request or store hidden chain-of-thought.
 
 ### P1.2 Decision quality
 
-- [ ] Create golden examples for `ALLOW`, `BLOCK`, `ESCALATE`, and `REWRITE` across all three threat models.
-- [ ] Label goal relevance and necessity independently for every golden example.
-- [ ] Add cases where a call is relevant but unnecessary, necessary but risky, and apparently safe but unrelated.
-- [ ] Add rewrite cases for narrower paths, reduced arguments, safer tools, and container routing.
-- [ ] Verify rewritten calls preserve `task_id`, step identity, provenance references, and the original user goal.
-- [ ] Test that a second rewrite request becomes `ESCALATE`.
-- [ ] Calibrate risk and confidence on a held-out labelled set; document thresholds rather than tuning on final test cases.
+- [x] Create golden examples for `ALLOW`, `BLOCK`, `ESCALATE`, and `REWRITE` across all three threat models.
+- [x] Label goal relevance and necessity independently for every golden example.
+- [x] Add cases where a call is relevant but unnecessary, necessary but risky, and apparently safe but unrelated.
+- [x] Add rewrite cases for narrower paths, reduced arguments, safer tools, and container routing.
+- [x] Verify rewritten calls preserve `task_id`, step identity, provenance references, and the original user goal.
+- [x] Test that a second rewrite request becomes `ESCALATE`.
+- [x] Calibrate risk and confidence on a held-out labelled set; document thresholds rather than tuning on final test cases.
 
 ### P1.3 Post-container exploration
 
-- [ ] Finalize the bounded `SandboxEvidence` representation with Person 2.
-- [ ] Build post-run golden cases for harmless success, blocked network access, suspicious file creation, timeout, resource exhaustion, and deceptive stdout.
-- [ ] Compare pre-run and post-run risk labels and explain every risk change using observable evidence.
-- [ ] Enforce that `ACCEPT_RESULT` consumes container output only and never authorizes automatic host re-execution.
-- [ ] Measure post-run risk accuracy, risk-update rate, useful recovery rate, latency, and token overhead.
-- [ ] Document sandbox-aware or delayed-behavior attacks as a limitation of post-run reevaluation.
+- [x] Finalize the bounded `SandboxEvidence` representation with Person 2.
+- [x] Build post-run golden cases for harmless success, blocked network access, suspicious file creation, timeout, resource exhaustion, and deceptive stdout.
+- [x] Compare pre-run and post-run risk labels and explain every risk change using observable evidence.
+- [x] Enforce that `ACCEPT_RESULT` consumes container output only and never authorizes automatic host re-execution.
+- [x] Measure post-run risk accuracy, risk-update rate, useful recovery rate, latency, and token overhead.
+- [x] Document sandbox-aware or delayed-behavior attacks as a limitation of post-run reevaluation.
 
 ### Person 1 done when
 
@@ -81,7 +81,7 @@ Owns `src/traceguard/sandbox/`, Docker-related configuration, and `tests/sandbox
 - [x] Add explicit tests showing that high and critical calls remain blocked or escalated even when Docker is available.
 - [x] Add harmless canary tests for network isolation, undeclared file access, process limits, output limits, and timeout.
 - [x] Measure cold-start latency, warm latency, peak memory, disk use, and cleanup reliability on the M2 Mac.
-- [ ] Compare simulated execution, container execution, and container execution with LLM reevaluation on the Docker-applicable benchmark stratum.
+- [x] Compare simulated execution, container execution, and container execution with LLM reevaluation on the Docker-applicable benchmark stratum.
 - [x] Document Docker Desktop's Linux VM and container escape/daemon compromise as residual risks.
 
 ### Person 2 done when
@@ -107,8 +107,8 @@ Owns `src/traceguard/tools/`, `src/traceguard/policy/`, `benchmarks/`, experimen
 
 ### P3.2 AgentDojo and custom attacks
 
-- [ ] Install and validate pinned AgentDojo `0.1.35` in the Python 3.11 environment.
-- [ ] Replace the metadata-only adapter with a native AgentDojo suite/runner integration using its task, injection, utility, and security checks.
+- [x] Install and validate pinned AgentDojo `0.1.35` in the Python 3.11 environment.
+- [x] Replace the metadata-only adapter with a native AgentDojo suite/runner integration using its task, injection, utility, and security checks.
 - [x] Select and document the AgentDojo suites and task IDs used for the primary indirect-injection evaluation.
 - [x] Expand each threat model to a reviewed development set and a held-out test set; do not reuse test cases for prompt or rule tuning.
 - [x] Add direct attacks covering disclosure, destructive requests, policy circumvention, and social-engineering variants.
@@ -131,14 +131,14 @@ Owns `src/traceguard/tools/`, `src/traceguard/policy/`, `benchmarks/`, experimen
 ### Person 3 done when
 
 - [x] One command reproduces a smoke matrix and one command reproduces the frozen full evaluation.
-- [ ] Every benchmark case has executable utility and security checks and an explicit threat-model label; custom cases satisfy this, but native AgentDojo execution remains to be integrated.
+- [x] Every benchmark case has executable utility and security checks and an explicit threat-model label.
 - [x] Final tables can be regenerated from raw traces without manual editing.
 
 ## Final Team Deliverables
 
-- [ ] Working supervised ReAct agent with neutral and defensive system prompts.
-- [ ] Deterministic, LLM-only, prompt-only, hybrid, and no-safeguard results across all eight ablations.
-- [ ] Separate quantitative results for policy violation, direct attack, and indirect injection.
-- [ ] Docker containment study limited to applicable terminal tasks.
-- [ ] Post-container LLM reevaluation reported as exploratory, with limitations.
-- [ ] Reproducible experiment manifests, traces, metric tables, final report, and short demo.
+- [x] Working supervised ReAct agent with neutral and defensive system prompts.
+- [x] Deterministic, LLM-only, prompt-only, hybrid, and no-safeguard results across all eight ablations.
+- [x] Separate quantitative results for policy violation, direct attack, and indirect injection.
+- [x] Docker containment study limited to applicable terminal tasks.
+- [x] Post-container LLM reevaluation reported as exploratory, with limitations.
+- [x] Reproducible experiment manifests, traces, metric tables, final report, and short demo.

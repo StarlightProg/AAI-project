@@ -101,6 +101,8 @@ def build_supervised_agentdojo_pipeline(
         supervisor = QwenSupervisor(
             provider=GeminiSupervisor(
                 model=supervisor_model,
+                timeout=supervisor_timeout,
+                max_transport_retries=supervisor_max_retries,
                 redaction_config=redaction_config,
             ),
             confidence_threshold=supervisor_confidence_threshold,
