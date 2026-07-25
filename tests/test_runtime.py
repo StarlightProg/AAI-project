@@ -7,6 +7,16 @@ from traceguard.tools.registry import default_registry
 from traceguard.types import Observation, SafeguardConfig, ToolCall, TrustLabel
 
 
+class FailingSupervisor:
+    def evaluate(self, user_task, call, observations):
+        del user_task, call, observations
+        raise AssertionError("LLM supervisor should not be called after deterministic block")
+
+    def reevaluate(self, user_task, call, evidence):
+        del user_task, call, evidence
+        raise AssertionError("not used")
+
+
 def test_react_episode_executes_safe_call(tmp_path):
     runtime = TraceGuardRuntime(
         tools=default_registry(tmp_path, tmp_path / "artifacts"),
@@ -92,3 +102,25 @@ def test_runtime_escalates_when_container_fails_closed(tmp_path):
     result = runtime.execute_call("inspect with restricted command", call, [observation])
     assert result.observation is None
     assert result.trace.episode_outcome == "ESCALATE"
+
+
+def test_deterministic_block_short_circuits_llm_supervisor(tmp_path):
+    runtime = TraceGuardRuntime(
+        tools=default_registry(tmp_path, tmp_path / "artifacts"),
+        config=SafeguardConfig(
+            supervisor_mode="deterministic_llm",
+            deterministic_policy=True,
+            llm_supervisor=True,
+        ),
+        policy=DeterministicPolicy(load_default_policy()),
+        supervisor=FailingSupervisor(),
+    )
+    call = ToolCall(
+        task_id="t",
+        step_id=0,
+        tool_name="restricted_command",
+        arguments={"command": ["sudo", "shutdown"]},
+    )
+    result = runtime.execute_call("run it", call, [])
+    assert result.trace.episode_outcome == "BLOCK"
+    assert len(result.trace.safeguard_outputs) == 1
