@@ -12,9 +12,31 @@ from typing import Any
 from traceguard.supervisor.contracts import SupervisorEvaluationLog
 from traceguard.supervisor.heuristic import HeuristicSupervisor
 from traceguard.supervisor.llm import GeminiSupervisor, OllamaSupervisor, QwenSupervisor
+from traceguard.supervisor.redaction import (
+    RedactionConfig,
+    mandatory_redaction_config,
+    redact_value,
+)
 from traceguard.types import Decision, Observation, SupervisorOutput, ToolCall, TrustLabel
 
 EMAIL_RE = re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b")
+
+
+def _redacted_supervisor_log_payload(
+    decision_payload: Mapping[str, Any],
+    last_evaluation_log: SupervisorEvaluationLog | None,
+    redaction_config: RedactionConfig | None,
+) -> dict[str, Any]:
+    redaction_config = mandatory_redaction_config(redaction_config)
+    return redact_value(
+        {
+            "decision": dict(decision_payload),
+            "llm_evaluation": last_evaluation_log.model_dump(mode="json")
+            if last_evaluation_log is not None
+            else None,
+        },
+        redaction_config,
+    )
 
 
 def build_supervised_agentdojo_pipeline(
@@ -32,9 +54,13 @@ def build_supervised_agentdojo_pipeline(
     supervisor_deterministic_enabled: bool,
     supervisor_log_path: Path | None,
     ollama_url: str,
+    seed: int = 0,
+    redaction_config: RedactionConfig | None = None,
     system_prompt: str | None = None,
 ):
     """Build an AgentDojo pipeline with TraceGuard between LLM and tools."""
+
+    redaction_config = mandatory_redaction_config(redaction_config)
 
     from agentdojo.agent_pipeline.agent_pipeline import AgentPipeline
     from agentdojo.agent_pipeline.base_pipeline_element import BasePipelineElement
@@ -47,6 +73,7 @@ def build_supervised_agentdojo_pipeline(
     from agentdojo.types import text_content_block_from_string
 
     if tool_output_format == "json":
+
         def formatter(result):
             return json.dumps(result, default=str)
     else:
@@ -60,11 +87,10 @@ def build_supervised_agentdojo_pipeline(
             url=supervisor_url or ollama_url,
             max_transport_retries=supervisor_max_retries,
             timeout=supervisor_timeout,
+            seed=seed,
+            redaction_config=redaction_config,
         )
-        deterministic_enabled = (
-            supervisor_deterministic_enabled
-            and supervisor_name not in {"llm"}
-        )
+        deterministic_enabled = supervisor_deterministic_enabled and supervisor_name not in {"llm"}
         supervisor = QwenSupervisor(
             provider=provider,
             confidence_threshold=supervisor_confidence_threshold,
@@ -73,7 +99,10 @@ def build_supervised_agentdojo_pipeline(
         )
     elif supervisor_name == "gemini":
         supervisor = QwenSupervisor(
-            provider=GeminiSupervisor(model=supervisor_model),
+            provider=GeminiSupervisor(
+                model=supervisor_model,
+                redaction_config=redaction_config,
+            ),
             confidence_threshold=supervisor_confidence_threshold,
             enable_rewrite=supervisor_enable_rewrite,
             deterministic_enabled=supervisor_deterministic_enabled,
@@ -119,7 +148,11 @@ def build_supervised_agentdojo_pipeline(
 
                 decision = supervisor.evaluate(str(query), call, observations)
                 decision_payload = decision.model_dump(mode="json")
-                decisions.append(decision_payload)
+                decision_record = {
+                    **decision_payload,
+                    "proposed_call": call.model_dump(mode="json"),
+                }
+                decisions.append(decision_record)
                 self._write_supervisor_log(decision_payload)
 
                 if decision.decision is Decision.REWRITE and decision.rewritten_call is not None:
@@ -142,14 +175,17 @@ def build_supervised_agentdojo_pipeline(
                     "log_path": str(supervisor_log_path) if supervisor_log_path else None,
                 }
             )
-            supervisor_trace = {
-                "provider": supervisor_name,
-                "model": supervisor_model,
-                "deterministic_enabled": getattr(
-                    supervisor, "deterministic_enabled", supervisor_deterministic_enabled
-                ),
-                "decisions": decisions,
-            }
+            supervisor_trace = redact_value(
+                {
+                    "provider": supervisor_name,
+                    "model": supervisor_model,
+                    "deterministic_enabled": getattr(
+                        supervisor, "deterministic_enabled", supervisor_deterministic_enabled
+                    ),
+                    "decisions": decisions,
+                },
+                redaction_config,
+            )
             if len(approved) == len(tool_calls):
                 updated_messages = [
                     *messages[:-1],
@@ -161,7 +197,10 @@ def build_supervised_agentdojo_pipeline(
                 ]
                 return query, runtime, env, updated_messages, extra_args
 
-            blocked = [item for item in decisions if item["decision"] != "ALLOW"]
+            blocked = redact_value(
+                [item for item in decisions if item["decision"] != "ALLOW"],
+                redaction_config,
+            )
             content = _text_content(messages[-1].get("content"))
             content = (
                 f"{content}\n\nTraceGuard supervisor blocked unsafe tool call: "
@@ -240,8 +279,7 @@ def build_supervised_agentdojo_pipeline(
             pseudo_messages = [{"role": "user", "content": query}, *messages]
             create_args = _create_event_args_from_request(pseudo_messages)
             if create_args is not None and (
-                "created event" in reasons.casefold()
-                or "argument" in reasons.casefold()
+                "created event" in reasons.casefold() or "argument" in reasons.casefold()
             ):
                 return (
                     "Observation: TraceGuard blocked the previous tool call because its "
@@ -263,12 +301,11 @@ def build_supervised_agentdojo_pipeline(
                 return
             supervisor_log_path.parent.mkdir(parents=True, exist_ok=True)
             last_evaluation_log = getattr(supervisor, "last_evaluation_log", None)
-            log_payload = {
-                "decision": decision_payload,
-                "llm_evaluation": last_evaluation_log.model_dump(mode="json")
-                if last_evaluation_log is not None
-                else None,
-            }
+            log_payload = _redacted_supervisor_log_payload(
+                decision_payload,
+                last_evaluation_log,
+                redaction_config,
+            )
             with supervisor_log_path.open("a", encoding="utf-8") as handle:
                 handle.write(json.dumps(log_payload, sort_keys=True) + "\n")
 
@@ -435,9 +472,7 @@ def _create_event_args_from_request(messages: Sequence[Mapping[str, Any]]) -> di
         source_event = _event_by_title(messages, quoted[1])
         if source_event and source_event.get("participants"):
             participants = [
-                item.strip()
-                for item in source_event["participants"].split(",")
-                if item.strip()
+                item.strip() for item in source_event["participants"].split(",") if item.strip()
             ]
     else:
         explicit_emails = EMAIL_RE.findall(first_user)

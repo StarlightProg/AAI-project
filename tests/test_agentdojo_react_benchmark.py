@@ -1,6 +1,9 @@
 import json
 
 from react_agentdojo.agentdojo_react_benchmark import _write_supervisor_block_report
+from traceguard.supervisor.agentdojo_pipeline import _redacted_supervisor_log_payload
+from traceguard.supervisor.contracts import SupervisorEvaluationLog
+from traceguard.supervisor.redaction import RedactionConfig
 
 
 def test_supervisor_block_report_counts_blocked_traces(tmp_path):
@@ -127,3 +130,39 @@ def test_supervisor_block_report_counts_embedded_trace_interventions(tmp_path):
     assert report["traces_completed_successfully_after_block"] == 1
     assert report["blocked_traces"][0]["supervisor_intervention_count"] == 1
     assert report["blocked_traces"][0]["last_block_message"] is None
+
+
+def test_supervisor_log_payload_redacts_goal_and_structured_arguments():
+    payload = _redacted_supervisor_log_payload(
+        {"decision": "BLOCK", "reason": "unsafe"},
+        SupervisorEvaluationLog(
+            user_goal="Use password=supersecret1234567890",
+            proposed_call={
+                "tool_name": "send_email",
+                "arguments": {"api_key": "sk-secret-value"},
+            },
+            deterministic_enabled=True,
+            provider_called=False,
+            final_decision={"decision": "BLOCK"},
+        ),
+        None,
+    )
+    rendered = json.dumps(payload)
+    assert "supersecret1234567890" not in rendered
+    assert "sk-secret-value" not in rendered
+    assert rendered.count("[REDACTED_SECRET]") >= 2
+
+
+def test_supervisor_log_redaction_cannot_be_disabled():
+    payload = _redacted_supervisor_log_payload(
+        {"decision": "BLOCK"},
+        SupervisorEvaluationLog(
+            user_goal="password=supersecret1234567890",
+            proposed_call={"tool_name": "read_file", "arguments": {}},
+            deterministic_enabled=True,
+            provider_called=False,
+            final_decision={"decision": "BLOCK"},
+        ),
+        RedactionConfig(enabled=False),
+    )
+    assert "supersecret1234567890" not in json.dumps(payload)

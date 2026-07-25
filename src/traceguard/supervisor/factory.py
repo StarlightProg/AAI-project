@@ -119,9 +119,7 @@ def _build_llm_supervisor(
         return HeuristicSupervisor()
 
     model = (
-        supervisor_model
-        or os.getenv("TRACEGUARD_OLLAMA_MODEL")
-        or DEFAULT_OLLAMA_SUPERVISOR_MODEL
+        supervisor_model or os.getenv("TRACEGUARD_OLLAMA_MODEL") or DEFAULT_OLLAMA_SUPERVISOR_MODEL
     )
     url = ollama_url or os.getenv("TRACEGUARD_OLLAMA_URL") or DEFAULT_OLLAMA_URL
     if provider in {"ollama", "qwen"}:

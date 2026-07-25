@@ -1,7 +1,15 @@
 import json
 from pathlib import Path
 
-from traceguard.types import Decision, PostRunDisposition, RiskLevel, ThreatModel
+from traceguard.supervisor.llm import QwenSupervisor
+from traceguard.types import (
+    Decision,
+    PostRunDisposition,
+    RiskLevel,
+    SandboxEvidence,
+    ThreatModel,
+    ToolCall,
+)
 
 
 def load(name):
@@ -49,3 +57,21 @@ def test_post_run_golden_cases_use_runtime_enums_and_required_scenarios():
     for case in cases:
         assert case["expected_post_decision"] in {item.value for item in PostRunDisposition}
         assert case["expected_risk"] in {item.value for item in RiskLevel}
+
+
+def test_post_run_golden_cases_match_runtime_behavior():
+    supervisor = QwenSupervisor()
+    call = ToolCall(
+        task_id="post-run-golden",
+        step_id=0,
+        tool_name="restricted_command",
+        arguments={"command": ["test"]},
+    )
+    for case in load("post_run_golden_cases.json"):
+        result = supervisor.reevaluate(
+            "Run the requested operation.",
+            call,
+            SandboxEvidence.model_validate(case["sandbox_evidence"]),
+        )
+        assert result.disposition.value == case["expected_post_decision"], case["case_id"]
+        assert result.risk.value == case["expected_risk"], case["case_id"]

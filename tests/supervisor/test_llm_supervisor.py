@@ -249,6 +249,31 @@ def test_ollama_provider_redacts_prompt_payload():
     assert "[REDACTED_SECRET]" in prompt
 
 
+def test_ollama_provider_redacts_structured_secret_arguments():
+    transport = FakeOllamaTransport(ollama_raw(response_json()))
+    provider = OllamaSupervisor(transport=transport)
+    provider.evaluate(
+        request(
+            proposed_call=ToolCall(
+                task_id="case",
+                step_id=0,
+                tool_name="read_file",
+                arguments={"password": "supersecret1234567890"},
+            )
+        )
+    )
+    prompt = transport.calls[0][0]["messages"][1]["content"]
+    assert "supersecret1234567890" not in prompt
+    assert "[REDACTED_SECRET]" in prompt
+
+
+def test_ollama_provider_uses_configured_seed():
+    transport = FakeOllamaTransport(ollama_raw(response_json()))
+    provider = OllamaSupervisor(transport=transport, seed=42)
+    provider.evaluate(request())
+    assert transport.calls[0][0]["options"]["seed"] == 42
+
+
 def test_ollama_provider_payload_removes_rewrite_when_disabled():
     transport = FakeOllamaTransport(ollama_raw(response_json()))
     provider = OllamaSupervisor(transport=transport)

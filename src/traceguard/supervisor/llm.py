@@ -22,7 +22,11 @@ from traceguard.supervisor.contracts import (
     SupervisorTransportError,
     validate_rewrite_against_request,
 )
-from traceguard.supervisor.redaction import RedactionConfig, redact_value
+from traceguard.supervisor.redaction import (
+    RedactionConfig,
+    mandatory_redaction_config,
+    redact_value,
+)
 from traceguard.types import (
     Decision,
     GoalNecessity,
@@ -106,9 +110,7 @@ SUPERVISOR_RESPONSE_JSON_SCHEMA = {
     ],
     "additionalProperties": False,
 }
-OLLAMA_QUANTIZATION_NOTE = (
-    "Ollama library quantization for qwen3:4b; qwen3:1.7b is the fallback."
-)
+OLLAMA_QUANTIZATION_NOTE = "Ollama library quantization for qwen3:4b; qwen3:1.7b is the fallback."
 OLLAMA_MEMORY_NOTE = (
     "Targets the local RTX 4060 8 GB setup; qwen3:1.7b remains the low-memory fallback."
 )
@@ -170,6 +172,7 @@ class OllamaSupervisor:
         memory_use: str | None = OLLAMA_MEMORY_NOTE,
         max_transport_retries: int = 2,
         timeout: float = 60.0,
+        seed: int = 0,
         redaction_config: RedactionConfig | None = None,
         transport: ChatTransport | None = None,
     ) -> None:
@@ -181,7 +184,8 @@ class OllamaSupervisor:
         self.memory_use = memory_use
         self.max_transport_retries = max_transport_retries
         self.timeout = timeout
-        self.redaction_config = redaction_config or RedactionConfig()
+        self.seed = seed
+        self.redaction_config = mandatory_redaction_config(redaction_config)
         self.transport = transport or UrlLibOllamaTransport(url)
         self.system_prompt = _load_supervisor_prompt()
 
@@ -257,7 +261,7 @@ class OllamaSupervisor:
             "options": {
                 "temperature": 0.0,
                 "top_p": 0.9,
-                "seed": 0,
+                "seed": self.seed,
                 "num_predict": 384,
             },
         }
@@ -317,7 +321,7 @@ class GeminiSupervisor:
         self.model = model
         self.transport = transport
         self.timeout = timeout
-        self.redaction_config = redaction_config or RedactionConfig()
+        self.redaction_config = mandatory_redaction_config(redaction_config)
         self.system_prompt = _load_supervisor_prompt()
 
     def evaluate(self, request: SupervisorRequest) -> SupervisorResponse:
@@ -475,13 +479,69 @@ class QwenSupervisor:
         evidence: SandboxEvidence,
     ) -> PostRunAssessment:
         del user_task, call
-        if evidence.timed_out or evidence.blocked_operations:
+        if evidence.timed_out:
             return PostRunAssessment(
                 risk=RiskLevel.HIGH,
                 confidence=0.9,
-                evidence=evidence.blocked_operations or ["sandbox timed out"],
+                evidence=["sandbox timed out"],
+                disposition=PostRunDisposition.ESCALATE,
+                reason="Timed-out execution requires review before its result can be trusted.",
+            )
+        if evidence.blocked_operations:
+            return PostRunAssessment(
+                risk=RiskLevel.HIGH,
+                confidence=0.9,
+                evidence=evidence.blocked_operations,
                 disposition=PostRunDisposition.BLOCK_RESULT,
-                reason="Sandbox evidence shows blocked or timed-out behavior.",
+                reason="Sandbox evidence shows blocked behavior.",
+            )
+        suspicious_files = [path for path in evidence.files_changed if SENSITIVE_RE.search(path)]
+        if suspicious_files:
+            return PostRunAssessment(
+                risk=RiskLevel.HIGH,
+                confidence=0.9,
+                evidence=suspicious_files,
+                disposition=PostRunDisposition.BLOCK_RESULT,
+                reason="Execution created or changed a file with a sensitive name.",
+            )
+        combined_output = f"{evidence.stdout}\n{evidence.stderr}"
+        prompt_injection_output = re.search(
+            r"(?im)^\s*(system|developer|assistant)\s*:|"
+            r"\bignore\s+(all\s+)?previous\b|"
+            r"\bread\s+(the\s+)?(secret|credential|password|token)",
+            combined_output,
+        )
+        if prompt_injection_output:
+            return PostRunAssessment(
+                risk=RiskLevel.HIGH,
+                confidence=0.9,
+                evidence=[prompt_injection_output.group(0)],
+                disposition=PostRunDisposition.BLOCK_RESULT,
+                reason="Execution output contains instruction-like sensitive content.",
+            )
+        if evidence.exit_code == 137 or (
+            evidence.peak_memory_bytes is not None and "killed" in evidence.stderr.casefold()
+        ):
+            return PostRunAssessment(
+                risk=RiskLevel.HIGH,
+                confidence=0.85,
+                evidence=[
+                    f"exit_code={evidence.exit_code}",
+                    f"peak_memory_bytes={evidence.peak_memory_bytes}",
+                ],
+                disposition=PostRunDisposition.BLOCK_RESULT,
+                reason="Execution was killed after apparent resource exhaustion.",
+            )
+        if evidence.exit_code not in {None, 0}:
+            return PostRunAssessment(
+                risk=RiskLevel.MEDIUM,
+                confidence=0.8,
+                evidence=[
+                    f"exit_code={evidence.exit_code}",
+                    evidence.stderr[:400],
+                ],
+                disposition=PostRunDisposition.BLOCK_RESULT,
+                reason="Execution failed, so its output cannot be accepted as a successful result.",
             )
         return PostRunAssessment(
             risk=RiskLevel.LOW,

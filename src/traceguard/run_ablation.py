@@ -40,6 +40,8 @@ def _run_custom(args: argparse.Namespace) -> int:
             "agent_model": args.agent_model,
             "supervisor_model": args.supervisor_model,
             "provider": args.provider,
+            "repetitions": getattr(args, "repetitions", 1),
+            "seeds": [args.seed + index for index in range(getattr(args, "repetitions", 1))],
             "output_dir": str(output_dir),
         }
         (output_dir / "dry_run_plan.json").write_text(
@@ -51,23 +53,35 @@ def _run_custom(args: argparse.Namespace) -> int:
 
     cases = load_cases(default_cases_path(), split="dev")
     ablations = {args.supervisor: bundle.config}
-    results, report, run_dir = run_experiment(
-        cases=cases,
-        ablations=ablations,
-        seed=args.seed,
-        artifacts_dir=output_dir,
-        code_revision="local",
-        supervisor_provider=args.provider,
-        supervisor_model=args.supervisor_model,
-        supervisor_url=args.supervisor_url,
-        timeout=args.timeout,
-    )
+    runs = []
+    total_results = 0
+    for repetition in range(getattr(args, "repetitions", 1)):
+        seed = args.seed + repetition
+        results, report, run_dir = run_experiment(
+            cases=cases,
+            ablations=ablations,
+            seed=seed,
+            artifacts_dir=output_dir,
+            code_revision="local",
+            supervisor_provider=args.provider,
+            supervisor_model=args.supervisor_model,
+            supervisor_url=args.supervisor_url,
+            timeout=args.timeout,
+        )
+        total_results += len(results)
+        runs.append(
+            {
+                "run_dir": str(run_dir),
+                "seed": seed,
+                "results": len(results),
+                "episode_metrics": report.episode,
+            }
+        )
     print(
         json.dumps(
             {
-                "run_dir": str(run_dir),
-                "results": len(results),
-                "episode_metrics": report.episode,
+                "runs": runs,
+                "results": total_results,
             },
             indent=2,
         )
@@ -95,6 +109,8 @@ def _run_agentdojo(args: argparse.Namespace) -> int:
             "user_tasks": args.user_task,
             "injection_tasks": args.injection_task,
             "attack": None if args.no_attack else args.attack,
+            "repetitions": args.repetitions,
+            "seeds": [args.seed + index for index in range(args.repetitions)],
             "output_dir": str(output_dir),
         }
         (output_dir / "dry_run_plan.json").write_text(
@@ -106,19 +122,44 @@ def _run_agentdojo(args: argparse.Namespace) -> int:
 
     from react_agentdojo.agentdojo_react_benchmark import run_benchmark
 
-    if args.no_attack:
+    seeds = [args.seed + index for index in range(args.repetitions)]
+    for repetition, seed in enumerate(seeds):
+        run_name = f"repetition_{repetition:03d}_seed_{seed}"
         run_benchmark(
-            _namespace_for_react(args, mode=args.supervisor, logdir=clean_dir, attack=False)
+            _namespace_for_react(
+                args,
+                mode=args.supervisor,
+                logdir=clean_dir / run_name,
+                attack=False,
+                seed=seed,
+            )
         )
+    if args.no_attack:
         print(json.dumps({"logdir": str(clean_dir)}, indent=2))
         return 0
 
-    run_benchmark(_namespace_for_react(args, mode=args.supervisor, logdir=clean_dir, attack=False))
-    run_benchmark(_namespace_for_react(args, mode=args.supervisor, logdir=attack_dir, attack=True))
+    for repetition, seed in enumerate(seeds):
+        run_name = f"repetition_{repetition:03d}_seed_{seed}"
+        run_benchmark(
+            _namespace_for_react(
+                args,
+                mode=args.supervisor,
+                logdir=attack_dir / run_name,
+                attack=True,
+                seed=seed,
+            )
+        )
     metrics = build_mode_metrics(
         mode=args.supervisor,
         clean_logdir=clean_dir,
         attack_logdir=attack_dir,
+    )
+    metrics.update(
+        {
+            "repetitions": args.repetitions,
+            "seed_start": args.seed,
+            "seeds": seeds,
+        }
     )
     output_dir.mkdir(parents=True, exist_ok=True)
     (output_dir / "summary.json").write_text(json.dumps(metrics, indent=2), encoding="utf-8")
@@ -159,11 +200,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--supervisor-max-retries", type=int, default=2)
     parser.add_argument("--supervisor-confidence-threshold", type=float, default=0.55)
     parser.add_argument("--supervisor-enable-rewrite", action="store_true")
+    parser.add_argument("--supervisor-redaction-config", type=Path, default=None)
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = build_parser().parse_args(argv)
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    if args.repetitions < 1:
+        parser.error("--repetitions must be at least 1")
     if args.suite == "custom":
         return _run_custom(args)
     return _run_agentdojo(args)

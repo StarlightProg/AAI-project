@@ -14,8 +14,7 @@ def test_mode_config_maps_four_public_modes():
     assert mode_from_safeguards(safeguard_config_for_mode("deterministic")) == "deterministic"
     assert mode_from_safeguards(safeguard_config_for_mode("llm")) == "llm"
     assert (
-        mode_from_safeguards(safeguard_config_for_mode("deterministic_llm"))
-        == "deterministic_llm"
+        mode_from_safeguards(safeguard_config_for_mode("deterministic_llm")) == "deterministic_llm"
     )
 
 
