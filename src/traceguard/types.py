@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from enum import StrEnum
-from typing import Any
+from typing import Any, Literal
 from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -101,6 +101,7 @@ class SupervisorOutput(StrictModel):
     rewritten_call: ToolCall | None = None
     execution_target: ExecutionTarget | None = None
     container_profile: str | None = None
+    provider_metadata: dict[str, Any] = Field(default_factory=dict)
 
     @model_validator(mode="after")
     def validate_decision_payload(self) -> SupervisorOutput:
@@ -177,6 +178,7 @@ class TraceEvent(StrictModel):
 
 
 class SafeguardConfig(StrictModel):
+    supervisor_mode: Literal["none", "deterministic", "llm", "deterministic_llm"] | None = None
     defensive_prompt: bool = False
     deterministic_policy: bool = False
     llm_supervisor: bool = False

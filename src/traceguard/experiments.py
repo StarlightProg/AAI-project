@@ -29,7 +29,7 @@ from traceguard.metrics import (
     validate_call_labels,
     validate_episode_labels,
 )
-from traceguard.policy.engine import DeterministicPolicy, load_default_policy
+from traceguard.policy.engine import load_default_policy
 from traceguard.runtime import TraceGuardRuntime
 from traceguard.sandbox.config import (
     default_sandbox_configuration_path,
@@ -37,7 +37,10 @@ from traceguard.sandbox.config import (
 )
 from traceguard.sandbox.runner import ContainerRunner
 from traceguard.supervisor.base import merge_outputs
-from traceguard.supervisor.heuristic import HeuristicSupervisor
+from traceguard.supervisor.factory import (
+    SupervisorProviderName,
+    build_supervisor_bundle,
+)
 from traceguard.tools.registry import default_registry
 from traceguard.types import (
     Observation,
@@ -140,10 +143,20 @@ def _build_runtime(
     *,
     container_execution: bool = False,
     sandbox_config_path: Path | None = None,
+    supervisor_provider: SupervisorProviderName = "heuristic",
+    supervisor_model: str | None = None,
+    supervisor_url: str | None = None,
+    timeout: float = 60.0,
 ) -> tuple[TraceGuardRuntime, str]:
-    policy_config = load_default_policy()
-    policy = DeterministicPolicy(policy_config) if config.deterministic_policy else None
-    supervisor = HeuristicSupervisor() if config.llm_supervisor else None
+    registry = default_registry(workspace, artifacts)
+    bundle = build_supervisor_bundle(
+        config,
+        provider=supervisor_provider,
+        supervisor_model=supervisor_model,
+        ollama_url=supervisor_url,
+        timeout=timeout,
+        available_tools=registry.schemas(),
+    )
     sandbox = (
         ContainerRunner(
             sandbox_config_path or default_sandbox_configuration_path(),
@@ -154,13 +167,13 @@ def _build_runtime(
         else None
     )
     runtime = TraceGuardRuntime(
-        tools=default_registry(workspace, artifacts),
-        config=config,
-        policy=policy,
-        supervisor=supervisor,
+        tools=registry,
+        config=bundle.config,
+        policy=bundle.policy,
+        supervisor=bundle.supervisor,
         sandbox=sandbox,
     )
-    return runtime, policy_config.version
+    return runtime, bundle.policy_version
 
 
 def _to_tool_calls(case: BenchmarkCase, seed: int) -> list[ToolCall]:
@@ -245,6 +258,10 @@ def run_case(
     output_root: Path,
     container_execution: bool = False,
     sandbox_config_path: Path | None = None,
+    supervisor_provider: SupervisorProviderName = "heuristic",
+    supervisor_model: str | None = None,
+    supervisor_url: str | None = None,
+    timeout: float = 60.0,
 ) -> CaseRunResult:
     random.seed(seed)
     workspace = output_root / "workspaces" / ablation / case.case_id / str(seed)
@@ -258,6 +275,10 @@ def run_case(
         config,
         container_execution=container_execution,
         sandbox_config_path=sandbox_config_path,
+        supervisor_provider=supervisor_provider,
+        supervisor_model=supervisor_model,
+        supervisor_url=supervisor_url,
+        timeout=timeout,
     )
     calls = _to_tool_calls(case, seed)
     runner = ReActRunner(runtime, ScriptedAgent(calls))
@@ -526,6 +547,10 @@ def run_experiment(
     case_filter: set[str] | None = None,
     container_execution: bool = False,
     sandbox_config_path: Path | None = None,
+    supervisor_provider: SupervisorProviderName = "heuristic",
+    supervisor_model: str | None = None,
+    supervisor_url: str | None = None,
+    timeout: float = 60.0,
 ) -> tuple[list[CaseRunResult], MetricReport, Path]:
     selected_ablations = {
         name: config
@@ -593,6 +618,10 @@ def run_experiment(
                     output_root=run_dir,
                     container_execution=container_execution,
                     sandbox_config_path=sandbox_config_path,
+                    supervisor_provider=supervisor_provider,
+                    supervisor_model=supervisor_model,
+                    supervisor_url=supervisor_url,
+                    timeout=timeout,
                 )
                 results.append(result)
                 result_payload = _sanitize(result.model_dump(mode="json"), redaction_patterns)

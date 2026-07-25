@@ -15,7 +15,7 @@ ruff check .
 ruff format --check .
 ```
 
-Install `.[gemini]`, `.[agentdojo]`, or both for external evaluations. Gemini credentials and model choices belong in environment variables; Ollama uses its local HTTP API. Copy `.env.example` into your untracked environment configuration and pin exact model identifiers in each experiment manifest.
+Install `.[gemini]`, `.[agentdojo]`, or both for external evaluations. Gemini credentials and model choices belong in environment variables; Ollama uses its local HTTP API. The default local supervisor model is `qwen3:4b`; use `qwen3:1.7b` as the fallback if memory is tight or the larger model is unavailable.
 
 ## Offline smoke run
 
@@ -54,6 +54,29 @@ python -m traceguard analyze --run-dir artifacts/run_<timestamp>_0
 
 # validate the AgentDojo install, version, suites, and selected task IDs
 python -m traceguard agentdojo-info
+
+# four-mode custom supervisor interface
+python -m traceguard.run_ablation --suite custom --supervisor none --dry-run
+python -m traceguard.run_ablation --suite custom --supervisor deterministic_llm --provider ollama
+
+# AgentDojo smoke ablation with vulnerable-agent attack prompting
+python -m traceguard.run_ablation \
+  --suite agentdojo \
+  --supervisor deterministic_llm \
+  --agent-model qwen3:4b \
+  --supervisor-model qwen3:4b \
+  --agentdojo-suite workspace \
+  --attack tool_knowledge \
+  --dangerously-follow-tool-instructions \
+  --smoke \
+  --force-rerun
+
+# conclusion matrix across none, deterministic, llm, and deterministic_llm
+traceguard conclusion-ablation \
+  --agent-model qwen3:4b \
+  --supervisor-model qwen3:4b \
+  --dangerously-follow-tool-instructions \
+  --force-rerun
 ```
 
 Traces, manifests, CSV/JSON summaries, paired comparisons, and representative traces are
@@ -65,13 +88,18 @@ TraceGuard canaries, common secret assignments, and literal patterns configured 
 `agentdojo-info` exits nonzero when AgentDojo is missing, its version differs from `0.1.35`,
 or a configured suite/task ID is unavailable.
 
+Conclusion ablations write `summary.csv`, `summary.json`, `conclusion_report.md`,
+raw AgentDojo logs, and `traceguard_supervisor_calls.jsonl` under
+`artifacts/conclusion_ablation_*`. Use `qwen3:1.7b` first for the agent if qwen3:4b
+runs out of memory; keep qwen3:4b for the supervisor when possible.
+
 ## Repository layout
 
-- `src/traceguard/supervisor/`: Gemini, Ollama, and offline supervisors.
+- `src/traceguard/supervisor/`: deterministic, Gemini, Ollama, and offline supervisors.
 - `src/traceguard/sandbox/`: hardened Docker execution.
 - `src/traceguard/tools/` and `src/traceguard/policy/`: typed tools and deterministic checks.
-- `benchmarks/`: AgentDojo boundary and custom threat-model cases.
-- `configs/`: eight primary ablations and sandbox profiles.
+- `benchmarks/`: AgentDojo boundary, native runner helpers, and custom threat-model cases.
+- `configs/`: eight primary ablations, four-mode smoke/full ablation configs, and sandbox profiles.
 - `artifacts/`: ignored experiment output.
 
 ## Security boundary
@@ -118,4 +146,4 @@ implemented.
 
 ## Benchmarking
 
-AgentDojo is pinned to `0.1.35`. Custom cases in `benchmarks/cases/custom_cases.json` keep policy violations, direct attacks, and indirect injections distinct. Experiment runners must use paired task/model seeds across the eight configurations in `configs/ablations.json` and record outputs under `artifacts/`.
+AgentDojo is pinned to `0.1.35`. Custom cases in `benchmarks/cases/custom_cases.json` keep policy violations, direct attacks, and indirect injections distinct.

@@ -6,6 +6,7 @@ import json
 import platform
 import statistics
 import subprocess
+import sys
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -361,7 +362,26 @@ def main(argv: list[str] | None = None) -> int:
     )
     sandbox_benchmark.add_argument("--runs", type=int, choices=range(1, 101), default=5)
 
-    args = parser.parse_args(argv)
+    subparsers.add_parser(
+        "ablation",
+        help="run a four-mode custom or AgentDojo ablation",
+    )
+    subparsers.add_parser(
+        "conclusion-ablation",
+        help="run the conclusion-focused AgentDojo ablation matrix",
+    )
+
+    command_argv = sys.argv[1:] if argv is None else argv
+    if command_argv[:1] == ["ablation"]:
+        from traceguard.run_ablation import main as ablation_main
+
+        return ablation_main(command_argv[1:])
+    if command_argv[:1] == ["conclusion-ablation"]:
+        from traceguard.conclusion_ablation import main as conclusion_main
+
+        return conclusion_main(command_argv[1:])
+
+    args = parser.parse_args(command_argv)
     if args.command == "smoke":
         return _smoke(args.root.resolve())
     if args.command == "smoke-matrix":

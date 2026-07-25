@@ -165,7 +165,10 @@ class TraceGuardRuntime:
         outputs: list[SupervisorOutput] = []
         if self.config.deterministic_policy:
             assert self.policy is not None
-            outputs.append(self.policy.evaluate(user_task, call, observations))
+            deterministic = self.policy.evaluate(user_task, call, observations)
+            outputs.append(deterministic)
+            if deterministic.decision in {Decision.BLOCK, Decision.ESCALATE}:
+                return outputs
         if self.config.llm_supervisor:
             assert self.supervisor is not None
             outputs.append(self.supervisor.evaluate(user_task, call, observations))
