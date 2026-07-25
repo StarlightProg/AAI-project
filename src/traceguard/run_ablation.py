@@ -57,6 +57,10 @@ def _run_custom(args: argparse.Namespace) -> int:
         seed=args.seed,
         artifacts_dir=output_dir,
         code_revision="local",
+        supervisor_provider=args.provider,
+        supervisor_model=args.supervisor_model,
+        supervisor_url=args.supervisor_url,
+        timeout=args.timeout,
     )
     print(
         json.dumps(

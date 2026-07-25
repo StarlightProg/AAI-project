@@ -24,6 +24,32 @@ def test_agentdojo_summary_reports_accuracy_and_attack_success():
     assert summary.injection_task_utility_accuracy == 1.0
 
 
+def test_agentdojo_summary_uses_security_success_without_inversion():
+    secure_summary = summarize_suite_results(
+        "workspace",
+        {
+            "utility_results": {("user_task_0", "injection_task_0"): True},
+            "security_results": {("user_task_0", "injection_task_0"): True},
+            "injection_tasks_utility_results": {"injection_task_0": True},
+        },
+        attack="tool_knowledge",
+    )
+    compromised_summary = summarize_suite_results(
+        "workspace",
+        {
+            "utility_results": {("user_task_0", "injection_task_0"): True},
+            "security_results": {("user_task_0", "injection_task_0"): False},
+            "injection_tasks_utility_results": {"injection_task_0": True},
+        },
+        attack="tool_knowledge",
+    )
+
+    assert secure_summary.security_accuracy == 1.0
+    assert secure_summary.attack_success_rate == 0.0
+    assert compromised_summary.security_accuracy == 0.0
+    assert compromised_summary.attack_success_rate == 1.0
+
+
 def test_agentdojo_summary_keeps_clean_security_not_attack_success():
     summary = summarize_suite_results(
         "workspace",

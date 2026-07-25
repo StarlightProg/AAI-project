@@ -903,12 +903,11 @@ def summarize_suite_results(
 ) -> AgentDojoSuiteSummary:
     utility_passed, utility_total = _count_bool(list(results["utility_results"].values()))
     raw_security_successes, security_total = _count_bool(list(results["security_results"].values()))
-    if attack is None:
-        security_passed = raw_security_successes
-        attack_success_rate = None
-    else:
-        security_passed = security_total - raw_security_successes
-        attack_success_rate = _ratio(raw_security_successes, security_total)
+    security_passed = raw_security_successes
+    attack_success_rate = None if attack is None else _ratio(
+        security_total - raw_security_successes,
+        security_total,
+    )
     injection_passed, injection_total = _count_bool(
         list(results["injection_tasks_utility_results"].values())
     )
