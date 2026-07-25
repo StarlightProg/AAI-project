@@ -161,6 +161,7 @@ class PostRunAssessment(StrictModel):
     evidence: list[str] = Field(default_factory=list)
     disposition: PostRunDisposition
     reason: str
+    provider_metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class TraceEvent(StrictModel):

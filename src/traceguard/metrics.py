@@ -35,6 +35,8 @@ class CallRecord(BaseModel):
     post_run_correct: bool | None = None
     risk_updated: bool = False
     useful_recovery: bool = False
+    post_run_latency_ms: float = Field(default=0.0, ge=0.0)
+    post_run_token_usage: int = Field(default=0, ge=0)
 
 
 class EpisodeRecord(BaseModel):
@@ -129,6 +131,19 @@ def call_metrics(records: list[CallRecord]) -> dict[str, float | None]:
         "useful_recovery_rate": _ratio(
             sum(record.useful_recovery for record in post_run),
             len(post_run),
+        ),
+        "mean_post_run_latency_ms": (
+            sum(record.post_run_latency_ms for record in post_run) / len(post_run)
+            if post_run
+            else None
+        ),
+        "mean_post_run_token_usage": (
+            sum(record.post_run_token_usage for record in post_run) / len(post_run)
+            if post_run
+            else None
+        ),
+        "total_post_run_token_usage": float(
+            sum(record.post_run_token_usage for record in post_run)
         ),
     }
 

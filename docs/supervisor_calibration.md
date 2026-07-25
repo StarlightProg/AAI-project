@@ -17,13 +17,23 @@ custom benchmark and contains:
 - a high-stakes uncertain-authority escalation;
 - a narrower-recipient rewrite.
 
+The reviewed golden set additionally covers all four threat-model labels,
+all four supervisor decisions, independently labelled relevance and
+necessity, necessary-but-risky behavior, relevant-but-unnecessary behavior,
+and a low-risk but unrelated lookup. Gemini and Ollama validate the same
+frozen golden cases through their shared structured contract.
+
 The threshold was selected as a conservative operating boundary for the
 prototype: values below a modest majority confidence require review, while
 high-confidence deny decisions remain fail-closed. It is fixed before the
 held-out test split is evaluated. Changing it requires a new experiment
 manifest and rerunning all paired ablations.
 
+The same threshold applies after container execution. A low-confidence
+`ACCEPT_RESULT` or `REWRITE_AND_RETRY` becomes `ESCALATE`. Post-run provider
+latency and input/output tokens are recorded separately from pre-execution
+supervision overhead.
+
 The calibration set is intentionally small. Confidence is model-dependent and
 not statistically calibrated; the evaluation report must describe it as an
 operating threshold, not a probability of correctness.
-

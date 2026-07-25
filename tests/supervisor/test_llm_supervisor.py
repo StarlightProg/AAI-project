@@ -1,19 +1,34 @@
 import json
+import sys
+import types
+from pathlib import Path
 
 import pytest
 
+from benchmarks.schema import load_cases, verify_frozen_cases
 from traceguard.supervisor.contracts import (
+    PostRunSupervisorRequest,
+    PostRunSupervisorResponse,
     SupervisorRequest,
     SupervisorSchemaError,
     SupervisorTransportError,
 )
 from traceguard.supervisor.llm import (
     GeminiSupervisor,
+    GoogleGenAITransport,
     OllamaSupervisor,
     QwenSupervisor,
     UrlLibOllamaTransport,
 )
-from traceguard.types import Decision, Observation, ToolCall, TrustLabel
+from traceguard.types import (
+    Decision,
+    Observation,
+    PostRunDisposition,
+    RiskLevel,
+    SandboxEvidence,
+    ToolCall,
+    TrustLabel,
+)
 
 
 def response_json(**overrides):
@@ -85,23 +100,31 @@ class FakeGeminiTransport:
         self.result = result
         self.calls = []
 
-    def generate_json(self, *, model, system, prompt, timeout):
-        self.calls.append((model, system, prompt, timeout))
+    def generate_json(self, *, model, system, prompt, timeout, response_schema=None):
+        self.calls.append((model, system, prompt, timeout, response_schema))
         if isinstance(self.result, Exception):
             raise self.result
         return self.result
 
 
 class FakeProvider:
-    def __init__(self, payload):
+    def __init__(self, payload, post_run_payload=None):
         self.payload = payload
+        self.post_run_payload = post_run_payload
         self.requests = []
+        self.post_run_requests = []
 
     def evaluate(self, request):
         self.requests.append(request)
         from traceguard.supervisor.contracts import SupervisorResponse
 
         return SupervisorResponse.model_validate(self.payload)
+
+    def evaluate_post_run(self, request):
+        self.post_run_requests.append(request)
+        if self.post_run_payload is None:
+            raise SupervisorSchemaError("no post-run response configured")
+        return PostRunSupervisorResponse.model_validate(self.post_run_payload)
 
 
 class FailingProvider:
@@ -337,6 +360,85 @@ def test_gemini_provider_mocked_valid_contract():
     assert result.metadata.provider == "gemini"
 
 
+def test_google_transport_applies_timeout_and_exposes_usage(monkeypatch):
+    captured = {}
+
+    class FakeHttpOptions:
+        def __init__(self, **kwargs):
+            captured["http_options"] = kwargs
+
+    class FakeResponse:
+        text = json.dumps(response_json())
+        usage_metadata = types.SimpleNamespace(
+            prompt_token_count=17,
+            candidates_token_count=5,
+        )
+
+    class FakeModels:
+        def generate_content(self, **kwargs):
+            captured["generate_content"] = kwargs
+            return FakeResponse()
+
+    class FakeClient:
+        def __init__(self, **kwargs):
+            captured["client"] = kwargs
+            self.models = FakeModels()
+
+    google_module = types.ModuleType("google")
+    genai_module = types.ModuleType("google.genai")
+    genai_module.Client = FakeClient
+    genai_module.types = types.SimpleNamespace(HttpOptions=FakeHttpOptions)
+    google_module.genai = genai_module
+    monkeypatch.setitem(sys.modules, "google", google_module)
+    monkeypatch.setitem(sys.modules, "google.genai", genai_module)
+
+    raw = GoogleGenAITransport("test-key").generate_json(
+        model="gemini-test",
+        system="system",
+        prompt="prompt",
+        timeout=1.25,
+    )
+
+    assert captured["http_options"]["timeout"] == 1250
+    assert raw["_traceguard_provider_metadata"] == {
+        "prompt_eval_count": 17,
+        "eval_count": 5,
+    }
+
+
+def test_gemini_provider_records_token_usage():
+    raw = response_json(
+        _traceguard_provider_metadata={
+            "prompt_eval_count": 17,
+            "eval_count": 5,
+        }
+    )
+    provider = GeminiSupervisor(transport=FakeGeminiTransport(raw))
+    result = provider.evaluate(request())
+
+    assert result.metadata.prompt_eval_count == 17
+    assert result.metadata.eval_count == 5
+
+
+def test_gemini_provider_redacts_prompt_payload():
+    transport = FakeGeminiTransport(response_json())
+    provider = GeminiSupervisor(transport=transport)
+    provider.evaluate(
+        request(
+            proposed_call=ToolCall(
+                task_id="case",
+                step_id=0,
+                tool_name="read_file",
+                arguments={"password": "supersecret1234567890"},
+            )
+        )
+    )
+
+    prompt = transport.calls[0][2]
+    assert "supersecret1234567890" not in prompt
+    assert "[REDACTED_SECRET]" in prompt
+
+
 def test_gemini_provider_mocked_schema_violation():
     provider = GeminiSupervisor(transport=FakeGeminiTransport({"decision": "NOPE"}))
     with pytest.raises(SupervisorSchemaError):
@@ -360,6 +462,241 @@ def test_gemini_provider_retries_transient_transport_failure():
     result = provider.evaluate(request())
     assert result.decision is Decision.ALLOW
     assert result.metadata.retries == 1
+
+
+@pytest.mark.parametrize(
+    ("error", "max_retries", "expected_calls"),
+    [
+        (SupervisorTransportError("unavailable model", retryable=False), 2, 1),
+        (SupervisorTransportError("timeout", retryable=True), 0, 1),
+    ],
+)
+def test_gemini_provider_transport_failures_are_bounded(error, max_retries, expected_calls):
+    transport = FakeGeminiTransport(error)
+    provider = GeminiSupervisor(
+        transport=transport,
+        max_transport_retries=max_retries,
+    )
+
+    with pytest.raises(SupervisorTransportError):
+        provider.evaluate(request())
+
+    assert len(transport.calls) == expected_calls
+
+
+@pytest.mark.parametrize("provider_name", ["ollama", "gemini"])
+@pytest.mark.parametrize("decision", ["BLOCK", "ESCALATE"])
+def test_valid_deny_decisions_are_never_retried(provider_name, decision):
+    payload = response_json(
+        decision=decision,
+        risk_level="HIGH",
+        necessity="UNNECESSARY",
+    )
+    if provider_name == "ollama":
+        transport = FakeOllamaTransport(
+            ollama_raw(payload),
+            SupervisorTransportError("must not be reached", retryable=True),
+        )
+        provider = OllamaSupervisor(transport=transport)
+    else:
+        transport = FakeGeminiTransport(payload)
+        provider = GeminiSupervisor(transport=transport)
+
+    result = provider.evaluate(request())
+
+    assert result.decision.value == decision
+    assert len(transport.calls) == 1
+
+
+def test_gemini_provider_escalates_second_rewrite_without_transport_call():
+    transport = FakeGeminiTransport(response_json())
+    provider = GeminiSupervisor(transport=transport)
+
+    result = provider.evaluate(request(step_already_rewritten=True))
+
+    assert result.decision is Decision.ESCALATE
+    assert transport.calls == []
+
+
+@pytest.mark.parametrize("provider_name", ["ollama", "gemini"])
+def test_providers_share_post_run_contract(provider_name):
+    payload = {
+        "disposition": "ACCEPT_RESULT",
+        "risk_level": "LOW",
+        "confidence": 0.9,
+        "evidence": ["exit_code=0"],
+        "reason": "bounded evidence is harmless",
+    }
+    if provider_name == "ollama":
+        provider = OllamaSupervisor(transport=FakeOllamaTransport(ollama_raw(payload)))
+    else:
+        provider = GeminiSupervisor(transport=FakeGeminiTransport(payload))
+    result = provider.evaluate_post_run(
+        PostRunSupervisorRequest(
+            user_goal="Run a harmless calculation.",
+            executed_call=ToolCall(
+                task_id="post",
+                step_id=0,
+                tool_name="restricted_command",
+                arguments={"command": ["python3", "-c", "print(42)"]},
+            ),
+            sandbox_evidence=SandboxEvidence(
+                exit_code=0,
+                stdout="42",
+                profile="isolated_compute",
+            ),
+        )
+    )
+
+    assert result.disposition is PostRunDisposition.ACCEPT_RESULT
+    assert result.risk_level is RiskLevel.LOW
+    assert result.metadata.provider == provider_name
+
+
+@pytest.mark.parametrize("provider_name", ["ollama", "gemini"])
+def test_providers_accept_same_frozen_golden_contract_set(provider_name):
+    cases = json.loads((Path(__file__).parent / "golden_cases.json").read_text(encoding="utf-8"))
+    for index, case in enumerate(cases):
+        rewritten = case.get("rewritten_call")
+        payload = {
+            "decision": case["expected_decision"],
+            "goal_relevance": case["goal_relevance"],
+            "necessity": case["necessity"],
+            "risk_level": case["risk_level"],
+            "confidence": 0.9,
+            "reason": "frozen contract fixture",
+            "rewritten_call": rewritten,
+        }
+        provider = (
+            OllamaSupervisor(transport=FakeOllamaTransport(ollama_raw(payload)))
+            if provider_name == "ollama"
+            else GeminiSupervisor(transport=FakeGeminiTransport(payload))
+        )
+        available_tools = {
+            case["proposed_call"]["tool_name"]: {"type": "object"},
+        }
+        if rewritten:
+            available_tools[rewritten["tool_name"]] = {"type": "object"}
+        result = provider.evaluate(
+            SupervisorRequest(
+                user_goal=case["user_goal"],
+                proposed_call=ToolCall(
+                    task_id=case["case_id"],
+                    step_id=index,
+                    **case["proposed_call"],
+                ),
+                available_tools=available_tools,
+            )
+        )
+
+        assert result.decision.value == case["expected_decision"]
+
+
+@pytest.mark.parametrize("provider_name", ["ollama", "gemini"])
+def test_providers_can_evaluate_every_call_in_frozen_benchmark(provider_name):
+    verify_frozen_cases()
+    cases = load_cases(Path("benchmarks/cases/custom_cases.json"))
+
+    for case in cases:
+        for step_id, proposed in enumerate(case.proposed_calls):
+            payload = response_json(rewritten_call=None)
+            provider = (
+                OllamaSupervisor(transport=FakeOllamaTransport(ollama_raw(payload)))
+                if provider_name == "ollama"
+                else GeminiSupervisor(transport=FakeGeminiTransport(payload))
+            )
+            result = provider.evaluate(
+                SupervisorRequest(
+                    user_goal=case.user_goal,
+                    proposed_call=ToolCall(
+                        task_id=case.case_id,
+                        step_id=step_id,
+                        tool_name=proposed.tool_name,
+                        arguments=proposed.arguments,
+                        consumed_observation_ids=proposed.consumed_observation_ids,
+                        requested_resources=proposed.requested_resources,
+                    ),
+                )
+            )
+
+            assert result.metadata.provider == provider_name
+
+
+def test_qwen_runtime_uses_provider_for_harmless_post_run_evidence():
+    provider = FakeProvider(
+        response_json(),
+        post_run_payload={
+            "disposition": "BLOCK_RESULT",
+            "risk_level": "MEDIUM",
+            "confidence": 0.9,
+            "evidence": ["unexpected output"],
+            "reason": "provider found the output inconsistent",
+        },
+    )
+    supervisor = QwenSupervisor(provider=provider)
+    call = ToolCall(
+        task_id="post",
+        step_id=0,
+        tool_name="restricted_command",
+        arguments={"command": ["python3", "-c", "print(42)"]},
+    )
+
+    result = supervisor.reevaluate(
+        "Run a harmless calculation.",
+        call,
+        SandboxEvidence(exit_code=0, stdout="42", profile="isolated_compute"),
+    )
+
+    assert result.disposition is PostRunDisposition.BLOCK_RESULT
+    assert provider.post_run_requests[0].executed_call == call
+
+
+def test_qwen_runtime_post_run_provider_failure_escalates():
+    supervisor = QwenSupervisor(provider=FakeProvider(response_json()))
+
+    result = supervisor.reevaluate(
+        "Run a harmless calculation.",
+        ToolCall(
+            task_id="post",
+            step_id=0,
+            tool_name="restricted_command",
+            arguments={"command": ["python3", "-c", "print(42)"]},
+        ),
+        SandboxEvidence(exit_code=0, stdout="42", profile="isolated_compute"),
+    )
+
+    assert result.disposition is PostRunDisposition.ESCALATE
+    assert result.risk is RiskLevel.HIGH
+
+
+def test_qwen_runtime_low_confidence_post_run_accept_escalates():
+    supervisor = QwenSupervisor(
+        provider=FakeProvider(
+            response_json(),
+            post_run_payload={
+                "disposition": "ACCEPT_RESULT",
+                "risk_level": "LOW",
+                "confidence": 0.2,
+                "evidence": ["exit_code=0"],
+                "reason": "probably safe",
+            },
+        ),
+        confidence_threshold=0.8,
+    )
+
+    result = supervisor.reevaluate(
+        "Run a harmless calculation.",
+        ToolCall(
+            task_id="post",
+            step_id=0,
+            tool_name="restricted_command",
+            arguments={"command": ["python3", "-c", "print(42)"]},
+        ),
+        SandboxEvidence(exit_code=0, stdout="42", profile="isolated_compute"),
+    )
+
+    assert result.disposition is PostRunDisposition.ESCALATE
+    assert result.risk is RiskLevel.HIGH
 
 
 def test_qwen_runtime_escalates_low_confidence_allow():
@@ -605,20 +942,26 @@ def test_qwen_runtime_llm_only_mode_accepts_provider_rewrite():
             }
         },
     )
-    result = supervisor.evaluate(
-        "Please inspect the report.",
-        ToolCall(
-            task_id="t",
-            step_id=0,
-            tool_name="read_file",
-            arguments={"path": "/tmp/report.txt"},
-        ),
-        [],
+    original = ToolCall(
+        task_id="t",
+        step_id=3,
+        call_id="original-call",
+        tool_name="read_file",
+        arguments={"path": "/tmp/report.txt"},
+        consumed_observation_ids=["observation-1"],
+        requested_resources=["input:report.txt"],
     )
+    result = supervisor.evaluate("Please inspect the report.", original, [])
     assert result.decision is Decision.REWRITE
     assert result.rewritten_call is not None
     assert result.rewritten_call.tool_name == "read_file"
     assert result.rewritten_call.arguments == {"path": "inputs/report.txt"}
+    assert result.rewritten_call.task_id == original.task_id
+    assert result.rewritten_call.step_id == original.step_id
+    assert result.rewritten_call.call_id == original.call_id
+    assert result.rewritten_call.consumed_observation_ids == original.consumed_observation_ids
+    assert result.rewritten_call.requested_resources == original.requested_resources
+    assert supervisor.last_evaluation_log.user_goal == "Please inspect the report."
 
 
 def test_qwen_runtime_llm_only_provider_failure_escalates():

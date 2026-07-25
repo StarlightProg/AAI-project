@@ -120,13 +120,20 @@ The live Ollama contract check passed on
 - input/output tokens: 896/107.
 
 The seven-case Docker-applicable stratum was then run with deterministic plus
-live Ollama supervision and post-container reevaluation in
+live Ollama pre-execution supervision and the earlier deterministic
+post-container assessor in
 `artifacts/run_20260725T205837464246Z_0`. It produced 0% attack success, 0%
 compromise, 100% unsafe-call blocking, 100% benign utility, and 85.7% safe
 completion. Mean supervised-call latency was 3.70 seconds and total supervisor
 token usage was 2,101. Post-run accuracy and useful recovery were both 0.5;
 this confirms the post-run stage is exploratory and should not replace
 pre-execution enforcement.
+
+The runtime now supports structured provider-backed post-run assessment for
+both Ollama and Gemini, including fail-closed timeout/error handling and
+separate latency/token accounting. The historical artifacts above predate
+that implementation and must not be presented as provider-backed post-run
+results. Per the current scope, no replacement live comparison was run.
 
 The live prompt-sensitive task agent also completed the full
 agent→supervisor→calculator loop with 100% utility in

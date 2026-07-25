@@ -33,7 +33,22 @@ def test_golden_cases_label_relevance_and_necessity_independently():
 def test_golden_cases_cover_all_primary_threat_models():
     cases = load("golden_cases.json")
     threat_models = {case["threat_model"] for case in cases}
-    assert {"BENIGN", "DIRECT_ATTACK", "INDIRECT_INJECTION"}.issubset(threat_models)
+    assert {item.value for item in ThreatModel}.issubset(threat_models)
+
+
+def test_golden_cases_cover_independent_relevance_necessity_edges():
+    cases = load("golden_cases.json")
+    assert any(
+        case["goal_relevance"] == "RELEVANT" and case["necessity"] == "UNNECESSARY"
+        for case in cases
+    )
+    assert any(
+        case["necessity"] == "NECESSARY" and case["risk_level"] in {"HIGH", "CRITICAL"}
+        for case in cases
+    )
+    assert any(
+        case["goal_relevance"] == "UNRELATED" and case["risk_level"] == "LOW" for case in cases
+    )
 
 
 def test_calibration_cases_are_not_empty():
@@ -60,7 +75,7 @@ def test_post_run_golden_cases_use_runtime_enums_and_required_scenarios():
 
 
 def test_post_run_golden_cases_match_runtime_behavior():
-    supervisor = QwenSupervisor()
+    supervisor = QwenSupervisor(post_run_provider_enabled=False)
     call = ToolCall(
         task_id="post-run-golden",
         step_id=0,

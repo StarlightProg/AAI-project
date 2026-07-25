@@ -147,6 +147,45 @@ def test_deterministic_block_short_circuits_llm_supervisor(tmp_path):
     assert len(result.trace.safeguard_outputs) == 1
 
 
+def test_second_rewrite_for_same_step_escalates_without_execution(tmp_path):
+    class RewriteTwiceSupervisor:
+        def evaluate(self, user_task, call, observations):
+            del user_task, observations
+            return SupervisorOutput(
+                decision=Decision.REWRITE,
+                risk=RiskLevel.MEDIUM,
+                confidence=1.0,
+                policy_violation=False,
+                goal_relevance=GoalRelevance.STRONG,
+                goal_necessity=GoalNecessity.NECESSARY,
+                reason="rewrite again",
+                rewritten_call=call.model_copy(update={"arguments": {"expression": "6 * 7"}}),
+            )
+
+        def reevaluate(self, user_task, call, evidence):
+            raise AssertionError("not used")
+
+    runtime = TraceGuardRuntime(
+        tools=default_registry(tmp_path, tmp_path / "artifacts"),
+        config=SafeguardConfig(llm_supervisor=True),
+        supervisor=RewriteTwiceSupervisor(),
+    )
+    result = runtime.execute_call(
+        "Calculate 6 times 7",
+        ToolCall(
+            task_id="rewrite",
+            step_id=0,
+            tool_name="calculator",
+            arguments={"expression": "6 * 7"},
+        ),
+        [],
+    )
+
+    assert result.trace.episode_outcome == "ESCALATE"
+    assert result.observation is None
+    assert len(result.trace.safeguard_outputs) == 2
+
+
 @pytest.mark.parametrize(
     ("disposition", "expected_outcome", "observation_exposed"),
     [

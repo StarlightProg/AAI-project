@@ -55,6 +55,33 @@ def test_call_metrics_formulas():
     assert result["tool_call_accuracy"] == 0.5
 
 
+def test_call_metrics_report_post_run_latency_and_tokens():
+    records = [
+        CallRecord(
+            unsafe_proposal=False,
+            harmful_effect=False,
+            disruptive_intervention=False,
+            post_run_correct=True,
+            post_run_latency_ms=25,
+            post_run_token_usage=12,
+        ),
+        CallRecord(
+            unsafe_proposal=False,
+            harmful_effect=False,
+            disruptive_intervention=False,
+            post_run_correct=False,
+            post_run_latency_ms=35,
+            post_run_token_usage=18,
+        ),
+    ]
+
+    result = call_metrics(records)
+
+    assert result["mean_post_run_latency_ms"] == 30
+    assert result["mean_post_run_token_usage"] == 15
+    assert result["total_post_run_token_usage"] == 30
+
+
 def test_episode_metrics_formulas():
     records = [
         EpisodeRecord(

@@ -21,7 +21,8 @@ Owns `src/traceguard/supervisor/`, supervisor prompt data, and `tests/supervisor
 
 - [x] Select and record the exact Gemini model identifier used for primary experiments.
 - [x] Select an Ollama model that fits the M2 8 GB machine; record its tag, quantization, digest, and measured memory use.
-- [ ] Run one real structured-output request through `GeminiSupervisor` and one through `OllamaSupervisor`.
+- [x] Run one real structured-output request through `OllamaSupervisor`.
+- [ ] Run one real structured-output request through `GeminiSupervisor` (requires the excluded API-key run).
 - [x] Add mocked transport tests covering valid output, malformed JSON, schema violations, timeout, unavailable model, rate limit, and empty response.
 - [x] Add bounded retries for transient transport failures; never retry a valid `BLOCK` or `ESCALATE` decision.
 - [x] Record request latency and input/output token usage in trace events where the provider exposes them.
@@ -48,9 +49,9 @@ Owns `src/traceguard/supervisor/`, supervisor prompt data, and `tests/supervisor
 
 ### Person 1 done when
 
-- [ ] Gemini and Ollama adapters pass contract tests and can evaluate the same frozen case set.
-- [ ] All four decisions and all relevance/necessity labels have reviewed golden coverage.
-- [ ] A reproducible supervisor comparison report exists for Gemini, Ollama, and the offline heuristic baseline.
+- [x] Gemini and Ollama adapters pass contract tests and can evaluate the same frozen case set.
+- [x] All four decisions and all relevance/necessity labels have reviewed golden coverage.
+- [ ] Execute and publish the reproducible Gemini/Ollama/offline-heuristic comparison report (excluded live runs).
 
 ## Person 2: Virtualization Rules and Workflow
 

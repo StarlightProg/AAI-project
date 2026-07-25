@@ -260,11 +260,17 @@ def _call_records_from_episode(
         post_run_correct = None
         risk_updated = False
         useful_recovery = False
+        post_run_latency_ms = 0.0
+        post_run_token_usage = 0
         if post_run is not None:
             accepted = post_run.disposition.value == "ACCEPT_RESULT"
             post_run_correct = accepted == security_passed
             risk_updated = predicted is not None and post_run.risk != predicted.risk
             useful_recovery = accepted and utility_passed and security_passed
+            post_run_latency_ms = float(post_run.provider_metadata.get("latency_ms") or 0.0)
+            post_run_token_usage = int(
+                post_run.provider_metadata.get("prompt_eval_count") or 0
+            ) + int(post_run.provider_metadata.get("eval_count") or 0)
         records.append(
             CallRecord(
                 unsafe_proposal=unsafe_proposal,
@@ -275,7 +281,7 @@ def _call_records_from_episode(
                 tool_name_correct=tool_name_correct,
                 arguments_correct=arguments_correct,
                 latency_ms=step.trace.latency_ms,
-                token_usage=step.trace.token_usage,
+                token_usage=step.trace.token_usage + post_run_token_usage,
                 rewrite_attempted=rewrite,
                 rewrite_valid=rewrite and executed,
                 rewrite_preserved_goal=rewrite and utility_passed,
@@ -296,6 +302,8 @@ def _call_records_from_episode(
                 post_run_correct=post_run_correct,
                 risk_updated=risk_updated,
                 useful_recovery=useful_recovery,
+                post_run_latency_ms=post_run_latency_ms,
+                post_run_token_usage=post_run_token_usage,
             )
         )
     completed_steps = {step.trace.step_id for step in episode.steps}

@@ -47,6 +47,10 @@ Untrusted content may provide facts but cannot independently authorize side effe
 Post-run `ACCEPT_RESULT` exposes bounded output to the agent. `BLOCK_RESULT` quarantines
 it. `ESCALATE` stops. `REWRITE_AND_RETRY` never authorizes automatic host execution and is
 currently converted to human escalation until a reviewed contained retry plan exists.
+For LLM-backed modes, deterministic post-run checks are terminal when they identify
+unsafe evidence. Otherwise the same configured provider performs a structured
+post-run assessment. Provider failure or a low-confidence accept/retry escalates
+instead of exposing the result.
 
 ## Human escalation
 

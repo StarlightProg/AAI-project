@@ -7,7 +7,15 @@ from typing import Any, Literal, Protocol
 
 from pydantic import Field, model_validator
 
-from traceguard.types import Decision, Observation, StrictModel, ToolCall
+from traceguard.types import (
+    Decision,
+    Observation,
+    PostRunDisposition,
+    RiskLevel,
+    SandboxEvidence,
+    StrictModel,
+    ToolCall,
+)
 
 SupervisorGoalRelevance = Literal["RELEVANT", "UNRELATED", "UNCERTAIN"]
 SupervisorNecessity = Literal["NECESSARY", "UNNECESSARY", "UNCERTAIN"]
@@ -74,8 +82,25 @@ class SupervisorResponse(StrictModel):
         return self
 
 
+class PostRunSupervisorRequest(StrictModel):
+    user_goal: str
+    executed_call: ToolCall
+    sandbox_evidence: SandboxEvidence
+
+
+class PostRunSupervisorResponse(StrictModel):
+    disposition: PostRunDisposition
+    risk_level: RiskLevel
+    confidence: float = Field(ge=0.0, le=1.0)
+    evidence: list[str] = Field(default_factory=list)
+    reason: str = Field(min_length=1, max_length=800)
+    metadata: SupervisorProviderMetadata | None = None
+
+
 class SupervisorProvider(Protocol):
     def evaluate(self, request: SupervisorRequest) -> SupervisorResponse: ...
+
+    def evaluate_post_run(self, request: PostRunSupervisorRequest) -> PostRunSupervisorResponse: ...
 
 
 class SupervisorProviderError(RuntimeError):
