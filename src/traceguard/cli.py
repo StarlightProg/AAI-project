@@ -9,12 +9,16 @@ import subprocess
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
+from uuid import uuid4
 
 from benchmarks.agentdojo_adapter import (
     load_selection,
     validate_selection,
     verify_agentdojo_installation,
 )
+from benchmarks.datasets.models import AdapterRunRequest
+from benchmarks.datasets.registry import default_dataset_registry
+from benchmarks.datasets.reporting import separated_dataset_report
 from benchmarks.schema import default_cases_path, load_cases
 from traceguard.agent import ReActRunner, ScriptedAgent
 from traceguard.experiments import (
@@ -28,8 +32,121 @@ from traceguard.runtime import TraceGuardRuntime
 from traceguard.sandbox.config import default_sandbox_configuration_path
 from traceguard.sandbox.runner import ContainerRunner, SandboxUnavailable
 from traceguard.supervisor.heuristic import HeuristicSupervisor
+from traceguard.supervisor.redaction import redact_value
 from traceguard.tools.registry import default_registry
 from traceguard.types import ExecutionPlan, ExecutionTarget, SafeguardConfig, ToolCall
+
+
+def _dataset_registry(args: argparse.Namespace):
+    return default_dataset_registry(cache_root=args.cache_root)
+
+
+def _environment_lock_digest(native_environment: str | None) -> str:
+    project_root = Path(__file__).resolve().parents[2]
+    lock_path = project_root / "uv.lock"
+    if native_environment:
+        environment_name = native_environment.removeprefix(".venv-")
+        lock_path = project_root / "benchmarks" / "environments" / environment_name / "uv.lock"
+    if not lock_path.is_file():
+        raise ValueError(f"environment lock is missing: {lock_path}")
+    return hashlib.sha256(lock_path.read_bytes()).hexdigest()
+
+
+def _dataset_command(args: argparse.Namespace) -> int:
+    registry = _dataset_registry(args)
+    if args.dataset_command == "list":
+        print(json.dumps(registry.describe(), indent=2))
+        return 0
+    if args.dataset_command == "fetch":
+        print(json.dumps(registry.fetch(args.name), indent=2))
+        return 0
+    if args.dataset_command == "verify":
+        print(
+            json.dumps(
+                registry.verify(args.name, fixture_only=args.fixture_only),
+                indent=2,
+            )
+        )
+        return 0
+    return 2
+
+
+def _benchmark_request(
+    args: argparse.Namespace,
+    dataset: str,
+) -> AdapterRunRequest:
+    registry = _dataset_registry(args)
+    manifest = registry.get(dataset)
+    if manifest.holdout == "sealed" and args.tier == "full":
+        if not args.prompt_digest or not args.policy_digest:
+            raise ValueError("sealed full runs require --prompt-digest and --policy-digest")
+    cache = registry.cache_path(dataset)
+    if args.tier != "smoke":
+        registry.verify(dataset)
+    external = [str(args.external_runner.resolve())] if args.external_runner else None
+    return AdapterRunRequest(
+        dataset=dataset,
+        tier=args.tier,
+        seed=args.seed,
+        supervisor_mode=args.supervisor_mode,
+        prompt_digest=args.prompt_digest,
+        policy_digest=args.policy_digest,
+        environment_lock_digest=args.environment_lock_digest
+        or _environment_lock_digest(manifest.native_environment),
+        dataset_cache_path=str(cache) if cache.is_dir() else None,
+        external_command=external,
+    )
+
+
+def _benchmark_command(args: argparse.Namespace) -> int:
+    registry = _dataset_registry(args)
+    names = [args.dataset] if args.benchmark_command == "run" else args.datasets
+    all_results = []
+    requests = []
+    for name in names:
+        request = _benchmark_request(args, name)
+        adapter = registry.adapter(name)
+        results = adapter.run(request)
+        all_results.extend(results)
+        requests.append(request.model_dump(mode="json"))
+    report = separated_dataset_report(all_results)
+    output_root = args.artifacts.resolve()
+    timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+    run_dir = output_root / f"dataset_benchmark_{timestamp}_{args.seed}_{uuid4().hex[:8]}"
+    run_dir.mkdir(parents=True, exist_ok=False)
+    with (run_dir / "results.jsonl").open("w", encoding="utf-8") as handle:
+        for result in all_results:
+            payload = redact_value(result.model_dump(mode="json"))
+            handle.write(json.dumps(payload, sort_keys=True) + "\n")
+    (run_dir / "summary.json").write_text(
+        json.dumps(report, indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
+    (run_dir / "experiment_manifest.json").write_text(
+        json.dumps(
+            {
+                "contract_version": "dataset-experiment-v1",
+                "created_at": datetime.now(UTC).isoformat(),
+                "requests": requests,
+                "datasets": [registry.get(name).model_dump(mode="json") for name in names],
+                "report_weighting": "separate_with_equal_dataset_macro",
+            },
+            indent=2,
+            sort_keys=True,
+        ),
+        encoding="utf-8",
+    )
+    print(
+        json.dumps(
+            {
+                "run_dir": str(run_dir),
+                "episodes": len(all_results),
+                "summary": report,
+            },
+            indent=2,
+        )
+    )
+    return 0
 
 
 def _smoke(root: Path) -> int:
@@ -284,6 +401,52 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="traceguard")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
+    dataset = subparsers.add_parser("dataset", help="manage pinned benchmark datasets")
+    dataset.add_argument(
+        "--cache-root",
+        type=Path,
+        default=Path(".cache/traceguard-datasets"),
+    )
+    dataset_commands = dataset.add_subparsers(dest="dataset_command", required=True)
+    dataset_commands.add_parser("list", help="list dataset manifests")
+    dataset_fetch = dataset_commands.add_parser("fetch", help="fetch a pinned upstream checkout")
+    dataset_fetch.add_argument("name")
+    dataset_verify = dataset_commands.add_parser("verify", help="verify fixture and checkout")
+    dataset_verify.add_argument("name")
+    dataset_verify.add_argument("--fixture-only", action="store_true")
+
+    benchmark = subparsers.add_parser(
+        "benchmark",
+        help="run normalized external benchmark adapters",
+    )
+    benchmark_commands = benchmark.add_subparsers(dest="benchmark_command", required=True)
+    benchmark_run = benchmark_commands.add_parser("run", help="run one dataset")
+    benchmark_run.add_argument("--dataset", required=True)
+    benchmark_matrix = benchmark_commands.add_parser("matrix", help="run datasets separately")
+    benchmark_matrix.add_argument("--datasets", nargs="+", required=True)
+    for benchmark_parser in (benchmark_run, benchmark_matrix):
+        benchmark_parser.add_argument(
+            "--cache-root",
+            type=Path,
+            default=Path(".cache/traceguard-datasets"),
+        )
+        benchmark_parser.add_argument("--artifacts", type=Path, default=Path("artifacts"))
+        benchmark_parser.add_argument(
+            "--tier",
+            choices=["smoke", "standard", "full"],
+            default="smoke",
+        )
+        benchmark_parser.add_argument("--seed", type=int, default=0)
+        benchmark_parser.add_argument(
+            "--supervisor-mode",
+            choices=["none", "deterministic"],
+            default="deterministic",
+        )
+        benchmark_parser.add_argument("--prompt-digest")
+        benchmark_parser.add_argument("--policy-digest")
+        benchmark_parser.add_argument("--environment-lock-digest")
+        benchmark_parser.add_argument("--external-runner", type=Path)
+
     smoke = subparsers.add_parser("smoke", help="run an offline supervised episode")
     smoke.add_argument("--root", type=Path, default=Path.cwd())
 
@@ -406,6 +569,14 @@ def main(argv: list[str] | None = None) -> int:
         return conclusion_main(command_argv[1:])
 
     args = parser.parse_args(command_argv)
+    if args.command == "dataset":
+        return _dataset_command(args)
+    if args.command == "benchmark":
+        try:
+            return _benchmark_command(args)
+        except (KeyError, RuntimeError, ValueError) as exc:
+            print(json.dumps({"completed": False, "error": str(exc)}, indent=2))
+            return 1
     if args.command == "smoke":
         return _smoke(args.root.resolve())
     if args.command == "smoke-matrix":

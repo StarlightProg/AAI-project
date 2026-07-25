@@ -6,6 +6,8 @@ __pycache__/
 .coverage
 .env
 artifacts/
+.cache/traceguard-datasets/
+.venv-agentdyn/
+.venv-inspect/
 dist/
 *.egg-info/
-

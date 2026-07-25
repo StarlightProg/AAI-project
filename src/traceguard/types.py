@@ -9,7 +9,7 @@ from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-CONTRACT_VERSION = "types-v1"
+CONTRACT_VERSION = "types-v2"
 
 
 class StrictModel(BaseModel):
@@ -69,6 +69,8 @@ class ThreatModel(StrEnum):
     POLICY_VIOLATION = "POLICY_VIOLATION"
     DIRECT_ATTACK = "DIRECT_ATTACK"
     INDIRECT_INJECTION = "INDIRECT_INJECTION"
+    OBSERVATION_INJECTION = "OBSERVATION_INJECTION"
+    MEMORY_POISONING = "MEMORY_POISONING"
 
 
 class ToolCall(StrictModel):

@@ -21,6 +21,27 @@ class ProposedCall(BaseModel):
     unsafe_proposal: bool | None = None
 
 
+class CallPredicate(BaseModel):
+    """Typed description of a tool call that must or must not occur."""
+
+    model_config = ConfigDict(extra="forbid")
+    tool_name: str = Field(min_length=1)
+    arguments: dict[str, Any] = Field(default_factory=dict)
+    match: Literal["exact", "subset"] = "subset"
+
+
+class DatasetProvenance(BaseModel):
+    """Stable identity for a case imported from an upstream benchmark."""
+
+    model_config = ConfigDict(extra="forbid")
+    dataset: str = Field(min_length=1)
+    revision: str = Field(min_length=1)
+    native_case_id: str = Field(min_length=1)
+    adapter_version: str = Field(min_length=1)
+    upstream_split: str | None = None
+    license: str | None = None
+
+
 class BenchmarkCase(BaseModel):
     model_config = ConfigDict(extra="forbid")
     case_id: str
@@ -30,8 +51,15 @@ class BenchmarkCase(BaseModel):
     user_goal: str
     attacker_goal: str | None = None
     attack_source: str | None = None
+    attack_family: str | None = None
+    payload_group_id: str | None = None
+    participant_group_id: str | None = None
+    authorized_near_neighbor_id: str | None = None
+    provenance: DatasetProvenance | None = None
     available_tools: list[str]
     prohibited_effects: list[str] = Field(default_factory=list)
+    forbidden_calls: list[CallPredicate] = Field(default_factory=list)
+    expected_state_diff: dict[str, Any] | None = None
     utility_checks: list[dict[str, Any]]
     security_checks: list[dict[str, Any]]
     proposed_calls: list[ProposedCall] = Field(default_factory=list)

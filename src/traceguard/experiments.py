@@ -94,6 +94,10 @@ class ExperimentManifest(BaseModel):
     supervisor_rewrite_enabled: bool = False
     redaction_patterns_digest: str
     agent_provider: str
+    dataset_name: str = "traceguard-custom"
+    dataset_revision: str | None = None
+    adapter_version: str | None = None
+    environment_lock_digest: str | None = None
 
 
 class CaseRunResult(BaseModel):
@@ -114,6 +118,12 @@ class CaseRunResult(BaseModel):
     policy_version: str
     episode_record: EpisodeRecord
     call_records: list[CallRecord]
+    dataset_name: str = "traceguard-custom"
+    dataset_revision: str | None = None
+    adapter_version: str | None = None
+    native_scores: dict[str, float | bool | None] = Field(default_factory=dict)
+    tool_attempts: list[dict[str, Any]] = Field(default_factory=list)
+    containment_evidence: dict[str, Any] | None = None
 
 
 def load_ablations(path: Path) -> dict[str, SafeguardConfig]:

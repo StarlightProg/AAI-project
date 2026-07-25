@@ -7,7 +7,9 @@ The reproducible results narrative is in
 [`docs/evaluation_report.md`](docs/evaluation_report.md), and the short walkthrough is
 in [`docs/demo.md`](docs/demo.md). Supervisor precedence and label semantics are in
 [`docs/contracts.md`](docs/contracts.md); confidence handling is documented in
-[`docs/supervisor_calibration.md`](docs/supervisor_calibration.md).
+[`docs/supervisor_calibration.md`](docs/supervisor_calibration.md). Dataset acquisition,
+native environments, tool inventory, safety controls, and score interpretation are in
+[`docs/external_benchmarks.md`](docs/external_benchmarks.md).
 
 ## Setup
 
@@ -156,3 +158,19 @@ implemented.
 ## Benchmarking
 
 AgentDojo is pinned to `0.1.35`. Custom cases in `benchmarks/cases/custom_cases.json` keep policy violations, direct attacks, and indirect injections distinct.
+
+External suites use immutable manifests and ignored caches:
+
+```bash
+traceguard dataset list
+traceguard dataset fetch llmail-inject
+traceguard dataset verify llmail-inject
+traceguard benchmark run --dataset llmail-inject --tier smoke
+traceguard benchmark matrix --datasets toolsword r-judge asb-subset --tier smoke
+```
+
+Smoke tiers are harmless offline contract fixtures. Native standard/full runs require a
+verified cache plus an executable JSON-protocol adapter supplied with
+`--external-runner`. AgentDyn is sealed and additionally requires frozen
+`--prompt-digest` and `--policy-digest` values for its full tier. Reports remain separate
+per dataset and use equal-dataset weighting only for the optional macro summary.
