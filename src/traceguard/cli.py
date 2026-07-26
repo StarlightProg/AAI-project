@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import platform
 import statistics
 import subprocess
@@ -253,6 +254,107 @@ def _smoke_matrix(root: Path, artifacts: Path | None, seed: int) -> int:
     return 0
 
 
+def _demo(args: argparse.Namespace) -> int:
+    """Run a concise, camera-friendly comparison and save the full traces."""
+
+    root = args.root.resolve()
+    all_cases = load_cases(default_cases_path(), split="all")
+    cases_by_id = {case.case_id: case for case in all_cases}
+    selected_cases = [
+        cases_by_id["benign_math_dev"],
+        cases_by_id["indirect_document_instruction"],
+    ]
+    all_ablations = load_ablations(default_ablations_path())
+    selected_ablations = {
+        "A0_no_safeguards": all_ablations["A0"],
+        "A7_full_hybrid": all_ablations["A7"],
+    }
+    results, _, run_dir = run_experiment(
+        cases=selected_cases,
+        ablations=selected_ablations,
+        seed=args.seed,
+        artifacts_dir=(args.artifacts or (root / "artifacts")).resolve(),
+        split="all",
+        cases_path=default_cases_path(),
+        agent_provider="scripted",
+        supervisor_provider="heuristic",
+    )
+
+    print("TRACEGUARD LIVE DEMO")
+    print("====================")
+    for result in results:
+        print(f"\n[{result.ablation}] {result.case_id}")
+        print(f"  threat model : {result.threat_model.value}")
+        for trace in result.traces:
+            proposed = trace["proposed_call"]
+            decisions = [output["decision"] for output in trace.get("safeguard_outputs", [])] or [
+                "NONE"
+            ]
+            print(
+                f"  step {trace['step_id']}       : propose "
+                f"{proposed['tool_name']}({json.dumps(proposed['arguments'], sort_keys=True)})"
+            )
+            print(f"                 supervisor={'+'.join(decisions)}")
+            print(f"                 outcome={trace['episode_outcome']}")
+        print(
+            "  checks       : "
+            f"utility={'PASS' if result.utility_passed else 'FAIL'}, "
+            f"security={'PASS' if result.security_passed else 'FAIL'}"
+        )
+
+    baseline_attack = next(
+        result
+        for result in results
+        if result.ablation == "A0_no_safeguards"
+        and result.case_id == "indirect_document_instruction"
+    )
+    hybrid_attack = next(
+        result
+        for result in results
+        if result.ablation == "A7_full_hybrid" and result.case_id == "indirect_document_instruction"
+    )
+    print("\nRESULT")
+    print("------")
+    print(
+        "  Baseline indirect injection : "
+        f"{'PREVENTED' if baseline_attack.security_passed else 'SUCCEEDED'}"
+    )
+    print(
+        "  Hybrid indirect injection   : "
+        f"{'PREVENTED' if hybrid_attack.security_passed else 'SUCCEEDED'}"
+    )
+    print(f"  Full sanitized traces        : {run_dir}")
+
+    if not args.gemini:
+        print("\nGemini live call skipped (add --gemini after configuring GEMINI_API_KEY).")
+        return 0
+    if not os.getenv("GEMINI_API_KEY"):
+        print("\nGemini live call requested, but GEMINI_API_KEY is not set.", file=sys.stderr)
+        return 2
+
+    model = args.gemini_model or os.getenv("TRACEGUARD_GEMINI_MODEL") or "gemini-3.5-flash"
+    live_results, _, live_run_dir = run_experiment(
+        cases=[cases_by_id["benign_math_dev"]],
+        ablations={"A7_gemini_live": all_ablations["A7"]},
+        seed=args.seed,
+        artifacts_dir=(args.artifacts or (root / "artifacts")).resolve(),
+        split="dev",
+        cases_path=default_cases_path(),
+        agent_provider="gemini",
+        agent_model=model,
+        supervisor_provider="gemini",
+        supervisor_model=model,
+    )
+    live = live_results[0]
+    print("\nGEMINI LIVE CHECK")
+    print("-----------------")
+    print(f"  model        : {model}")
+    print(f"  utility      : {'PASS' if live.utility_passed else 'FAIL'}")
+    print(f"  security     : {'PASS' if live.security_passed else 'FAIL'}")
+    print(f"  trace output : {live_run_dir}")
+    return 0 if live.utility_passed and live.security_passed else 1
+
+
 def _agentdojo_info(_: argparse.Namespace) -> int:
     selection = load_selection()
     payload: dict[str, object] = {"selection": selection}
@@ -458,6 +560,20 @@ def main(argv: list[str] | None = None) -> int:
     smoke_matrix.add_argument("--artifacts", type=Path, default=None)
     smoke_matrix.add_argument("--seed", type=int, default=0)
 
+    demo = subparsers.add_parser(
+        "demo",
+        help="run a concise benign/baseline/hybrid comparison for the submission video",
+    )
+    demo.add_argument("--root", type=Path, default=Path.cwd())
+    demo.add_argument("--artifacts", type=Path, default=None)
+    demo.add_argument("--seed", type=int, default=0)
+    demo.add_argument(
+        "--gemini",
+        action="store_true",
+        help="also run one live Gemini agent and supervisor episode",
+    )
+    demo.add_argument("--gemini-model", default=None)
+
     experiment = subparsers.add_parser(
         "experiment",
         help="run one case, one ablation, or the full safeguard matrix",
@@ -581,6 +697,8 @@ def main(argv: list[str] | None = None) -> int:
         return _smoke(args.root.resolve())
     if args.command == "smoke-matrix":
         return _smoke_matrix(args.root.resolve(), args.artifacts, args.seed)
+    if args.command == "demo":
+        return _demo(args)
     if args.command == "experiment":
         return _experiment(args)
     if args.command == "agentdojo-info":

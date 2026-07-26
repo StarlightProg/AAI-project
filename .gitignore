@@ -11,3 +11,8 @@ artifacts/
 .venv-inspect/
 dist/
 *.egg-info/
+report/*.aux
+report/*.blg
+report/*.log
+report/*.out
+report/main.pdf

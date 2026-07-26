@@ -36,6 +36,22 @@ python -m traceguard smoke
 
 The smoke run uses the deterministic policy and offline heuristic supervisor. It does not require credentials, Ollama, AgentDojo, or Docker.
 
+## Submission video demo
+
+```bash
+# concise live baseline-versus-hybrid comparison
+python -m traceguard demo
+
+# add a real Gemini task-agent and supervisor check
+export GEMINI_API_KEY='your-rotated-key'
+python -m traceguard demo --gemini
+```
+
+The command prints each proposed tool call, the supervisor decision, the execution
+outcome, and utility/security checks. Full sanitized traces are saved under
+`artifacts/`. Never put an API key in `.env.example`; use an ignored `.env` file or
+export it in the recording shell.
+
 ## Experiments
 
 ```bash
